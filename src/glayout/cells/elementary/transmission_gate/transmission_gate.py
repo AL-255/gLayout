@@ -1,7 +1,5 @@
 from glayout import MappedPDK, sky130,gf180
-from gdsfactory.cell import cell
-from gdsfactory.component import Component
-from gdsfactory import Component
+from glayout.backend import Component, cell, rectangle
 from glayout.primitives.fet import nmos, pmos, multiplier
 from glayout.util.comp_utils import evaluate_bbox, prec_center, align_comp_to_port, movex, movey
 from glayout.util.snap_to_grid import component_snap_to_grid
@@ -13,7 +11,6 @@ from glayout.primitives.guardring import tapring
 from glayout.util.port_utils import add_ports_perimeter
 from glayout.spice.netlist import Netlist
 from glayout.primitives.via_gen import via_stack
-from gdsfactory.components import text_freetype, rectangle
 try:
     from glayout.verification.evaluator_wrapper import run_evaluation
 except ImportError:

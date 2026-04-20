@@ -1,13 +1,10 @@
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
-from gdsfactory import Component
-from gdsfactory.cell import cell
-from gdsfactory.component_reference import ComponentReference
+from glayout.backend import Component, ComponentReference, cell, rectangle
 
 from glayout.util.comp_utils import evaluate_bbox, prec_ref_center, prec_center, align_comp_to_port
 from glayout.util.port_utils import rename_ports_by_orientation
 from glayout.util.snap_to_grid import component_snap_to_grid
-from gdsfactory.components import text_freetype, rectangle
 
 from glayout.spice.netlist import Netlist
 from glayout.routing.straight_route import straight_route

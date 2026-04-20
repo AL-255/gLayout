@@ -4,11 +4,9 @@ environ['OPENBLAS_NUM_THREADS'] = '1'
 # path to glayout
 sys.path.append(path.join(path.dirname(__file__), '../../'))
 
-from gdsfactory.read.import_gds import import_gds
-from gdsfactory.components import text_freetype, rectangle
+from glayout.backend import Component, cell, clear_cache, import_gds, rectangle
 from glayout.util.comp_utils import prec_array, movey, align_comp_to_port, prec_ref_center
 from glayout.util.port_utils import add_ports_perimeter, print_ports
-from gdsfactory.component import Component
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.cells.composite.fvf_based_ota.ota import super_class_AB_OTA
 from glayout.routing.L_route import L_route
@@ -17,10 +15,8 @@ from glayout.routing.straight_route import straight_route
 from glayout.util.comp_utils import evaluate_bbox, prec_ref_center, prec_center, align_comp_to_port
 from glayout.util.port_utils import rename_ports_by_orientation
 from glayout.util.snap_to_grid import component_snap_to_grid
-from gdsfactory.components import text_freetype, rectangle
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.primitives.via_gen import via_array, via_stack
-from gdsfactory.cell import cell, clear_cache
 import numpy as np
 from subprocess import Popen
 from pathlib import Path

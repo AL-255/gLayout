@@ -4,8 +4,7 @@ import re
 import subprocess
 import shutil
 from pathlib import Path
-from gdsfactory.typings import Component
-from gdsfactory.geometry.boolean import boolean
+from glayout.backend import Component, boolean
 
 # Get the path to run_pex.sh in the evaluator_box directory
 _EVALUATOR_BOX_DIR = Path(__file__).parent

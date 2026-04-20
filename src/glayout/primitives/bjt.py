@@ -11,9 +11,7 @@ from glayout.util.port_utils import add_ports_perimeter, rename_ports_by_list, r
 from glayout.util.comp_utils import prec_center, prec_array, prec_ref_center, to_float, move, align_comp_to_port, evaluate_bbox, to_decimal
 from glayout.primitives.via_gen import via_array, via_stack
 from glayout.routing.straight_route import straight_route
-from gdsfactory.cell import cell
-from gdsfactory import Component
-from gdsfactory.components import text_freetype, rectangle, rectangular_ring
+from glayout.backend import Component, cell, rectangle, rectangular_ring
 
 
 def get_number_contacts(dims, contact_dims, padding, spacing ):

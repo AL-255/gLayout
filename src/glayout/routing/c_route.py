@@ -1,16 +1,12 @@
-from gdsfactory.cell import cell
-from gdsfactory.component import Component
-from gdsfactory.port import Port
+from glayout.backend import Component, Port, cell, rectangle, snap_to_grid
 from glayout.pdk.mappedpdk import MappedPDK
 from typing import Optional, Union
 from math import isclose
 from glayout.primitives.via_gen import via_stack, via_array
 from glayout.routing.straight_route import straight_route
-from gdsfactory.components.rectangle import rectangle
 from glayout.util.comp_utils import evaluate_bbox, get_primitive_rectangle, to_float, prec_ref_center
 from glayout.util.port_utils import add_ports_perimeter, rename_ports_by_orientation, rename_ports_by_list, print_ports, set_port_width, set_port_orientation, get_orientation
 from pydantic import validate_arguments
-from gdsfactory.snap import snap_to_grid
 
 
 @validate_arguments
