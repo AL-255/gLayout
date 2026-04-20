@@ -264,6 +264,8 @@ class ComponentReference:
         self._ref = gref
         # owner is the Component this reference has been added to (not the target)
         self.owner: Optional["Component"] = None
+        # `info` is used by some cells to attach netlist / hierarchy metadata.
+        self.info: dict = {}
 
     # --- transform properties ---------------------------------------------
     @property
