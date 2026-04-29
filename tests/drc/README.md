@@ -56,6 +56,31 @@ A subset of cells can be selected with `--cells`:
 python tests/drc/run_cell_drc.py --pdk sky130 --cells current_mirror_nfet,opamp
 ```
 
+## Cell parameters
+
+Per-cell kwargs live in CSV files alongside this README:
+
+- `tests/parameters/ci_drc_sky130.csv`
+- `tests/parameters/ci_drc_gf180.csv`
+
+Each row is `cell,params_json` where `params_json` is a JSON object passed as
+**kwargs to the cell's builder. Tuples are written as JSON arrays (the runner
+recursively coerces lists back to tuples for builders that pydantic-validate
+`tuple[...]`).
+
+```csv
+cell,params_json
+current_mirror_nfet,"{""device"": ""nfet"", ""numcols"": 2}"
+flipped_voltage_follower,"{""device_type"": ""nmos"", ""width"": [5.0, 5.0], ""fingers"": [2, 2]}"
+transmission_gate,{}
+```
+
+The runner picks the file matching `--pdk` automatically; override with
+`--params <path>`. Cells in the CSV but missing from the builder registry in
+`run_cell_drc.py` (`_CELL_BUILDERS`) raise an error at startup; cells in the
+registry but missing from the CSV are silently skipped — the CSV is the source
+of truth for what runs in CI.
+
 ## Output
 
 For each run the script writes:

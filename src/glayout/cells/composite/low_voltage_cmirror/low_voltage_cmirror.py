@@ -120,10 +120,18 @@ def  low_voltage_cmirror(
     fet_3_ref = prec_ref_center(fet_1)
     fet_4_ref = prec_ref_center(fet_1)
 
-    fet_1_ref.movex(cascode_fvf_ref.xmin - (evaluate_bbox(fet_1)[0]/2) - pdk.util_max_metal_seperation())
-    fet_2_ref.movex(cascode_fvf_ref.xmin - (3*evaluate_bbox(fet_1)[0]/2) - 2*pdk.util_max_metal_seperation())
-    fet_3_ref.movex(cascode_fvf_ref.xmax + (evaluate_bbox(fet_1)[0]/2) + pdk.util_max_metal_seperation())
-    fet_4_ref.movex(cascode_fvf_ref.xmax + (3*evaluate_bbox(fet_1)[0]/2) + 2*pdk.util_max_metal_seperation())
+    # Use max(metal_sep, pwell_min_separation) so gf180 LVPWELL spacing rule
+    # (LPW.2a/b: 0.86um) isn't violated by under-spaced subcells. sky130's
+    # pwell self-rule is empty (raises NotImplementedError), so fall back to 0.
+    try:
+        _pwell_sep = pdk.get_grule("pwell").get("min_separation", 0)
+    except NotImplementedError:
+        _pwell_sep = 0
+    _xclear = max(pdk.util_max_metal_seperation(), _pwell_sep)
+    fet_1_ref.movex(cascode_fvf_ref.xmin - (evaluate_bbox(fet_1)[0]/2) - _xclear)
+    fet_2_ref.movex(cascode_fvf_ref.xmin - (3*evaluate_bbox(fet_1)[0]/2) - 2*_xclear)
+    fet_3_ref.movex(cascode_fvf_ref.xmax + (evaluate_bbox(fet_1)[0]/2) + _xclear)
+    fet_4_ref.movex(cascode_fvf_ref.xmax + (3*evaluate_bbox(fet_1)[0]/2) + 2*_xclear)
 
     top_level.add(fet_1_ref)
     top_level.add(fet_2_ref)
@@ -173,8 +181,10 @@ def  low_voltage_cmirror(
     top_level << c_route(pdk, gate_1_via.ports["top_met_S"], gate_3_via.ports["top_met_S"], extension=(1.2*width[0]+0.6), cglayer='met2')
     top_level << c_route(pdk, gate_2_via.ports["top_met_S"], gate_4_via.ports["top_met_S"], extension=(1.2*width[0]-0.6), cglayer='met2')
     
-    top_level << straight_route(pdk, fet_1_ref.ports["multiplier_0_source_W"], fet_1_ref.ports["tie_W_top_met_W"], glayer1='met1', width=0.2)
-    top_level << straight_route(pdk, fet_3_ref.ports["multiplier_0_source_W"], fet_3_ref.ports["tie_W_top_met_W"], glayer1='met1', width=0.2)
+    # PDK-aware tie route width — gf180 met1 min_width is 0.23, sky130 met1 (li1) is 0.17.
+    _tie_w = max(0.2, pdk.get_grule("met1")["min_width"])
+    top_level << straight_route(pdk, fet_1_ref.ports["multiplier_0_source_W"], fet_1_ref.ports["tie_W_top_met_W"], glayer1='met1', width=_tie_w)
+    top_level << straight_route(pdk, fet_3_ref.ports["multiplier_0_source_W"], fet_3_ref.ports["tie_W_top_met_W"], glayer1='met1', width=_tie_w)
     
 
     top_level.add_ports(bias_fvf_ref.get_ports_list(), prefix="M_1_")

@@ -49,13 +49,13 @@ def diff_pair_ibias_netlist(center_diffpair: Component, current_mirror: Componen
 
     cmirror_ref = netlist.connect_netlist(
         current_mirror.info['netlist'],
-        [('VREF', 'IBIAS'), ('VB', 'VSS')]
+        [('VREF', 'IBIAS'), ('B', 'VSS')]
     )
 
     netlist.connect_subnets(
         cmirror_ref,
         diffpair_ref,
-        [('VCOPY', 'VTAIL')]
+        [('VOUT', 'VTAIL')]
     )
 
     if antenna_diode is not None:
@@ -185,16 +185,24 @@ def diff_pair_ibias(
         pdk,
         width=diffpair_bias[0],
         length=diffpair_bias[1],
+        fingers=1,
         multipliers=diffpair_bias[2]
     )
 
-    # add cmirror
+    # add cmirror — bump y-offset enough that the LVPWELL paddings of the
+    # diffpair and cmirror don't end up with a sub-min_separation gap (gf180
+    # LPW.2a/b: min 0.86um). sky130's pwell self-rule is empty so fall back.
+    try:
+        _pwell_sep = pdk.get_grule("pwell").get("min_separation", 0)
+    except NotImplementedError:
+        _pwell_sep = 0
+    _pwell_clear = max(metal_sep, _pwell_sep)
     tailcurrent_ref = diffpair_i_ << cmirror
     tailcurrent_ref.movey(
         pdk.snap_to_2xgrid(
             -0.5 * (center_diffpair_comp.ymax - center_diffpair_comp.ymin)
             - abs(tailcurrent_ref.ymax)
-            - metal_sep
+            - _pwell_clear
         )
     )
     purposegndPort = tailcurrent_ref.ports["purposegndportscon_S"].copy()

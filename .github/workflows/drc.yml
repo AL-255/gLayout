@@ -65,13 +65,35 @@ jobs:
           python3.10 --version
           ls "$PDK_ROOT"
 
-      - name: Create venv and install glayout
+      - name: Cache python venv
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.venv
+          # Bust the cache when setup.py changes (deps) or the bundled DRC
+          # decks change (paths embedded in glayout's editable install).
+          key: drc-venv-py310-${{ runner.os }}-${{ hashFiles('setup.py', 'src/glayout/**/*.py') }}-v1
+          restore-keys: |
+            drc-venv-py310-${{ runner.os }}-
+
+      - name: Create venv and install glayout (cache miss)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+          rm -rf "$GITHUB_WORKSPACE/.venv"
           python3.10 -m venv "$GITHUB_WORKSPACE/.venv"
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           python -m pip install --upgrade pip wheel
           python -m pip install -e .
+
+      - name: Refresh editable install (cache hit)
+        if: steps.cache-venv.outputs.cache-hit == 'true'
+        run: |
+          set -euxo pipefail
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          # Editable install metadata may have stale paths after restore;
+          # re-install without redownloading deps.
+          python -m pip install --no-deps -e .
 
       - name: Run cell DRC
         run: |

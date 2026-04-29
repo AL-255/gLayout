@@ -170,7 +170,10 @@ def  flipped_voltage_follower(
     top_level << c_route(pdk, drain_1_via.ports["top_met_S"], gate_2_via.ports["top_met_S"], extension=1.2*max(width[0],width[1]), cglayer="met2")
     top_level << straight_route(pdk, fet_2_ref.ports["multiplier_0_gate_E"], gate_2_via.ports["bottom_met_W"])
     try:
-        top_level << straight_route(pdk, fet_2_ref.ports["multiplier_0_source_W"], fet_2_ref.ports["tie_W_top_met_W"], glayer1=tie_layers2[1], width=0.2*sd_rmult, fullbottom=True)
+        # Use the PDK's own min_width for the tie route layer rather than a
+        # hardcoded 0.2um (gf180's met1 min_width is 0.23um, so 0.2 trips M1.1).
+        _tie_width = max(0.2 * sd_rmult, pdk.get_grule(tie_layers2[1])["min_width"])
+        top_level << straight_route(pdk, fet_2_ref.ports["multiplier_0_source_W"], fet_2_ref.ports["tie_W_top_met_W"], glayer1=tie_layers2[1], width=_tie_width, fullbottom=True)
     except:
         pass
     #Renaming Ports

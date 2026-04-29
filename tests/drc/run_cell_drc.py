@@ -14,6 +14,7 @@ The script:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -30,149 +31,91 @@ BUNDLED_DECKS = {
     "sky130": REPO_ROOT / "src" / "glayout" / "pdk" / "sky130_mapped" / "sky130.lydrc",
     "gf180":  REPO_ROOT / "src" / "glayout" / "pdk" / "gf180_mapped" / "gf180mcu.drc",
 }
+DEFAULT_PARAM_DIR = REPO_ROOT / "tests" / "parameters"
 
 
 @dataclass
 class CellSpec:
     name: str
     builder: Callable[..., Any]
-    kwargs_by_pdk: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    skip_pdks: List[str] = field(default_factory=list)
+    kwargs: Dict[str, Any] = field(default_factory=dict)
 
 
-def _import_cells() -> Dict[str, CellSpec]:
-    """Import cell builders lazily so that import errors are reported per-cell."""
-    from glayout.cells.elementary import (
-        current_mirror,
-        diff_pair,
-        flipped_voltage_follower,
-        transmission_gate,
-    )
-    from glayout.cells.composite import (
-        differential_to_single_ended_converter,
-        diff_pair_ibias,
-        low_voltage_cmirror,
-        opamp,
-    )
+# Cell-name -> import path for the builder. Builders are imported lazily so
+# that an import error in one cell doesn't kill the whole runner.
+_CELL_BUILDERS: Dict[str, str] = {
+    "current_mirror_nfet":                    "glayout.cells.elementary:current_mirror",
+    "current_mirror_pfet":                    "glayout.cells.elementary:current_mirror",
+    "diff_pair":                              "glayout.cells.elementary:diff_pair",
+    "flipped_voltage_follower":               "glayout.cells.elementary:flipped_voltage_follower",
+    "transmission_gate":                      "glayout.cells.elementary:transmission_gate",
+    "differential_to_single_ended_converter": "glayout.cells.composite:differential_to_single_ended_converter",
+    "diff_pair_ibias":                        "glayout.cells.composite:diff_pair_ibias",
+    "low_voltage_cmirror":                    "glayout.cells.composite:low_voltage_cmirror",
+    "opamp":                                  "glayout.cells.composite:opamp",
+}
 
-    specs: List[CellSpec] = [
-        CellSpec(
-            name="current_mirror_nfet",
-            builder=current_mirror,
-            kwargs_by_pdk={
-                "sky130": {"device": "nfet", "numcols": 2},
-                "gf180":  {"device": "nfet", "numcols": 2},
-            },
-        ),
-        CellSpec(
-            name="current_mirror_pfet",
-            builder=current_mirror,
-            kwargs_by_pdk={
-                "sky130": {"device": "pfet", "numcols": 2},
-                "gf180":  {"device": "pfet", "numcols": 2},
-            },
-        ),
-        CellSpec(
-            name="diff_pair",
-            builder=diff_pair,
-            kwargs_by_pdk={
-                "sky130": {"width": 3, "fingers": 4, "n_or_p_fet": True},
-                "gf180":  {"width": 3, "fingers": 4, "n_or_p_fet": True},
-            },
-        ),
-        CellSpec(
-            name="flipped_voltage_follower",
-            builder=flipped_voltage_follower,
-            kwargs_by_pdk={
-                "sky130": {
-                    "device_type": "nmos", "placement": "horizontal",
-                    "width": (5.0, 5.0), "length": (1.0, 1.0),
-                    "fingers": (2, 2), "multipliers": (1, 1),
-                },
-                "gf180": {
-                    "device_type": "nmos", "placement": "vertical",
-                    "width": (3.0, 3.0), "length": (0.5, 0.5),
-                    "fingers": (2, 2), "multipliers": (1, 1),
-                },
-            },
-        ),
-        CellSpec(
-            name="transmission_gate",
-            builder=transmission_gate,
-            kwargs_by_pdk={
-                "sky130": {},
-                "gf180":  {},
-            },
-        ),
-        CellSpec(
-            # PDK-specific rmult: rmult=1 is clean on sky130 (1 m4.4 density-area
-            # filtered out); rmult=3 minimizes gf180 violations (28→11; rmult=4
-            # is worse).
-            name="differential_to_single_ended_converter",
-            builder=differential_to_single_ended_converter,
-            kwargs_by_pdk={
-                "sky130": {"rmult": 1, "half_pload": (3.0, 1.0, 2), "via_xlocation": 0},
-                "gf180":  {"rmult": 3, "half_pload": (3.0, 1.0, 2), "via_xlocation": 0},
-            },
-        ),
-        CellSpec(
-            # PDK-specific rmult: rmult=2 is clean on sky130 (rmult=3 trips
-            # m2.2 spacing); rmult=3 is required on gf180 (rmult=2 trips
-            # M3.2a from parallel m3 routes 0.05um apart).
-            name="diff_pair_ibias",
-            builder=diff_pair_ibias,
-            kwargs_by_pdk={
-                "sky130": {
-                    "half_diffpair_params": (5.0, 1.0, 1),
-                    "diffpair_bias": (5.0, 2.0, 1),
-                    "rmult": 2,
-                    "with_antenna_diode_on_diffinputs": 0,
-                },
-                "gf180": {
-                    "half_diffpair_params": (5.0, 1.0, 1),
-                    "diffpair_bias": (5.0, 2.0, 1),
-                    "rmult": 3,
-                    "with_antenna_diode_on_diffinputs": 0,
-                },
-            },
-        ),
-        CellSpec(
-            name="low_voltage_cmirror",
-            builder=low_voltage_cmirror,
-            kwargs_by_pdk={
-                "sky130": {"width": (4.0, 1.5), "length": 2.0, "fingers": (2, 1), "multipliers": (1, 1)},
-                "gf180":  {"width": (4.0, 1.5), "length": 2.0, "fingers": (2, 1), "multipliers": (1, 1)},
-            },
-        ),
-        CellSpec(
-            # PDK-specific rmult — same rationale as diff_pair_ibias.
-            name="opamp",
-            builder=opamp,
-            kwargs_by_pdk={
-                "sky130": {
-                    "half_diffpair_params": (5.0, 1.0, 1),
-                    "diffpair_bias": (5.0, 2.0, 1),
-                    "half_common_source_params": (7.0, 1.0, 10, 5),
-                    "half_common_source_bias": (6.0, 2.0, 8, 4),
-                    "half_pload": (6.0, 1.0, 5),
-                    "add_output_stage": False,
-                    "with_antenna_diode_on_diffinputs": 0,
-                    "rmult": 2,
-                },
-                "gf180": {
-                    "half_diffpair_params": (5.0, 1.0, 1),
-                    "diffpair_bias": (5.0, 2.0, 1),
-                    "half_common_source_params": (7.0, 1.0, 10, 5),
-                    "half_common_source_bias": (6.0, 2.0, 8, 4),
-                    "half_pload": (6.0, 1.0, 5),
-                    "add_output_stage": False,
-                    "with_antenna_diode_on_diffinputs": 0,
-                    "rmult": 3,
-                },
-            },
-        ),
-    ]
-    return {spec.name: spec for spec in specs}
+
+def _resolve_builder(import_path: str) -> Callable[..., Any]:
+    module_name, attr = import_path.split(":", 1)
+    module = __import__(module_name, fromlist=[attr])
+    return getattr(module, attr)
+
+
+def _coerce_tuples(value: Any) -> Any:
+    """JSON has no tuples — recursively convert lists back to tuples for builders
+    that pydantic-validate ``tuple[...]``. Keeps dicts/scalars untouched."""
+    if isinstance(value, list):
+        return tuple(_coerce_tuples(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _coerce_tuples(v) for k, v in value.items()}
+    return value
+
+
+def _load_param_csv(path: Path) -> Dict[str, Dict[str, Any]]:
+    """Read ``cell,params_json`` rows into a {cell: kwargs} mapping."""
+    if not path.exists():
+        raise FileNotFoundError(f"parameter file not found: {path}")
+    out: Dict[str, Dict[str, Any]] = {}
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "cell" not in reader.fieldnames or "params_json" not in reader.fieldnames:
+            raise ValueError(f"{path} must have header 'cell,params_json'")
+        for row in reader:
+            name = (row.get("cell") or "").strip()
+            if not name or name.startswith("#"):
+                continue
+            raw = (row.get("params_json") or "").strip()
+            try:
+                kwargs = json.loads(raw) if raw else {}
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}: row '{name}' has invalid JSON: {exc}") from exc
+            if not isinstance(kwargs, dict):
+                raise ValueError(f"{path}: row '{name}' params_json must be a JSON object")
+            out[name] = {k: _coerce_tuples(v) for k, v in kwargs.items()}
+    return out
+
+
+def _load_cell_specs(pdk: str, param_csv: Optional[Path]) -> Dict[str, CellSpec]:
+    """Load a {cell_name: CellSpec} for the given PDK from the CSV.
+
+    Cells listed in the CSV but unknown to ``_CELL_BUILDERS`` raise an error.
+    Cells defined in ``_CELL_BUILDERS`` but missing from the CSV are silently
+    skipped — the CSV is the source of truth for what runs in CI.
+    """
+    csv_path = param_csv or DEFAULT_PARAM_DIR / f"ci_drc_{pdk}.csv"
+    rows = _load_param_csv(csv_path)
+    unknown = sorted(set(rows) - set(_CELL_BUILDERS))
+    if unknown:
+        raise ValueError(f"{csv_path}: unknown cell(s) {unknown}; add a builder mapping in run_cell_drc.py")
+    specs: Dict[str, CellSpec] = {}
+    for name, kwargs in rows.items():
+        specs[name] = CellSpec(
+            name=name,
+            builder=_resolve_builder(_CELL_BUILDERS[name]),
+            kwargs=kwargs,
+        )
+    return specs
 
 
 def _resolve_pdk(pdk_name: str):
@@ -313,6 +256,11 @@ def main() -> int:
         default=None,
         help="Path to a klayout DRC deck overriding the bundled one (e.g. a PDK-installed deck).",
     )
+    parser.add_argument(
+        "--params",
+        default=None,
+        help=f"Path to the cell parameter CSV (default: {DEFAULT_PARAM_DIR}/ci_drc_<pdk>.csv).",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir).resolve()
@@ -328,26 +276,22 @@ def main() -> int:
         return 2
 
     pdk = _resolve_pdk(args.pdk)
-    specs = _import_cells()
+    specs = _load_cell_specs(args.pdk, Path(args.params).resolve() if args.params else None)
     if args.cells:
         wanted = {c.strip() for c in args.cells.split(",") if c.strip()}
+        missing = wanted - set(specs)
+        if missing:
+            print(f"warning: cells not in CSV: {sorted(missing)}", file=sys.stderr)
         specs = {n: s for n, s in specs.items() if n in wanted}
 
     results: List[dict] = []
     for name, spec in specs.items():
         result: Dict[str, Any] = {"cell": name, "pdk": args.pdk, "status": "skip"}
-        if args.pdk in spec.skip_pdks:
-            result["message"] = f"cell skipped on {args.pdk}"
-            results.append(result)
-            print(f"[SKIP] {name}: {result['message']}")
-            continue
-
-        kwargs = spec.kwargs_by_pdk.get(args.pdk, {})
         gds_path = gds_dir / f"{name}.gds"
         rpt_path = rpt_dir / f"{name}.lyrdb"
         try:
             print(f"[BUILD] {name}", flush=True)
-            comp = spec.builder(pdk, **kwargs)
+            comp = spec.builder(pdk, **spec.kwargs)
             # Some cells (e.g. diff_pair_ibias) return a ComponentReference;
             # wrap into a fresh Component so we can write_gds.
             if not hasattr(comp, "write_gds"):
