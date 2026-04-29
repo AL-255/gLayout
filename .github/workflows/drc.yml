@@ -28,6 +28,11 @@ jobs:
         # The image sets PYTHONPATH to its 3.12 site-packages, which breaks
         # python3.10 if inherited.
         PYTHONPATH: ""
+        # GitHub Actions overrides the image's ENTRYPOINT with `tail -f`, so
+        # the iic-osic-tools entrypoint that normally enriches PATH with
+        # /foss/tools/{bin,klayout,...} never runs. Set it explicitly here
+        # so klayout/magic/etc. are on PATH for every step.
+        PATH: /foss/tools/bin:/foss/tools/sak:/foss/tools/kactus2:/foss/tools/klayout:/foss/tools/osic-multitool:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
     strategy:
       fail-fast: false
