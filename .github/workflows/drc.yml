@@ -34,6 +34,12 @@ jobs:
       matrix:
         pdk: [sky130, gf180]
 
+    # The iic-osic-tools image's default container shell is dash (`sh`), so
+    # `set -o pipefail` blows up. Force bash for every `run:` step.
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - uses: actions/checkout@v4
 
