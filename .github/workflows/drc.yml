@@ -1,0 +1,86 @@
+name: Cell DRC
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  drc:
+    name: DRC (${{ matrix.pdk }})
+    runs-on: ubuntu-22.04
+
+    # iic-osic-tools ships klayout, magic, netgen, and the sky130A / gf180mcuD
+    # PDKs pre-installed under /foss/pdks. The image is Ubuntu 24.04 with only
+    # Python 3.12, but glayout pins gdsfactory<=7.7.0 / numpy<=1.24, so we
+    # install Python 3.10 from deadsnakes and run glayout in a venv.
+    #
+    # See https://github.com/iic-jku/iic-osic-tools.
+    container:
+      image: hpretl/iic-osic-tools:latest
+      options: --user root
+      # The image's entrypoint launches a UI manager; bypass it.
+      env:
+        PDK_ROOT: /foss/pdks
+        DEBIAN_FRONTEND: noninteractive
+        PYTHONUNBUFFERED: "1"
+        # The image sets PYTHONPATH to its 3.12 site-packages, which breaks
+        # python3.10 if inherited.
+        PYTHONPATH: ""
+
+    strategy:
+      fail-fast: false
+      matrix:
+        pdk: [sky130, gf180]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python 3.10 (deadsnakes)
+        run: |
+          set -euxo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            software-properties-common ca-certificates gnupg curl
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3.10 python3.10-venv
+
+      - name: Show tool versions
+        run: |
+          set -euxo pipefail
+          klayout -v
+          python3.10 --version
+          ls "$PDK_ROOT"
+
+      - name: Create venv and install glayout
+        run: |
+          set -euxo pipefail
+          python3.10 -m venv "$GITHUB_WORKSPACE/.venv"
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          python -m pip install --upgrade pip wheel
+          python -m pip install -e .
+
+      - name: Run cell DRC
+        run: |
+          set -euxo pipefail
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          python tests/drc/run_cell_drc.py \
+            --pdk ${{ matrix.pdk }} \
+            --out-dir drc_results/${{ matrix.pdk }}
+
+      - name: Upload DRC artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drc-${{ matrix.pdk }}
+          path: drc_results/${{ matrix.pdk }}
+
+      - name: Publish JUnit summary
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: drc_results/${{ matrix.pdk }}/junit.xml
+          check_name: DRC report (${{ matrix.pdk }})
+          require_tests: true
