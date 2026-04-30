@@ -216,6 +216,82 @@ def _run_klayout(deck: Path, gds: Path, report: Path) -> subprocess.CompletedPro
     return subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
 
+def _run_one_cell(item: dict) -> dict:
+    """Build a single cell, write GDS+netlist, run klayout DRC. Designed to be
+    invoked via ProcessPoolExecutor so each cell runs on its own core.
+
+    item keys: name, pdk, deck, kwargs, gds_path, rpt_path, netlist_path, out_dir
+    """
+    name = item["name"]
+    pdk_name = item["pdk"]
+    deck = Path(item["deck"])
+    out_dir = Path(item["out_dir"])
+    gds_path = Path(item["gds_path"])
+    rpt_path = Path(item["rpt_path"])
+    netlist_path = Path(item["netlist_path"])
+    result: Dict[str, Any] = {"cell": name, "pdk": pdk_name, "status": "skip"}
+    try:
+        print(f"[BUILD] {name}", flush=True)
+        pdk = _resolve_pdk(pdk_name)
+        builder = _resolve_builder(_CELL_BUILDERS[name])
+        comp = builder(pdk, **item["kwargs"])
+        if not hasattr(comp, "write_gds"):
+            from gdsfactory.component import Component as _Component
+            wrapper = _Component(name)
+            wrapper.add(comp)
+            wrapper.add_ports(comp.get_ports_list())
+            if hasattr(comp, "parent") and "netlist" in getattr(comp.parent, "info", {}):
+                wrapper.info["netlist"] = comp.parent.info["netlist"]
+            comp = wrapper
+        comp.name = name
+        comp.write_gds(str(gds_path))
+        netlist_info = comp.info.get("netlist") if hasattr(comp, "info") else None
+        if netlist_info is not None:
+            if hasattr(netlist_info, "generate_netlist"):
+                netlist_text = netlist_info.generate_netlist()
+            else:
+                netlist_text = str(netlist_info)
+            netlist_path.write_text(netlist_text)
+    except Exception as exc:
+        result.update({"status": "error", "message": f"build failed: {exc}", "trace": traceback.format_exc()})
+        print(f"[ERROR] {name}: build failed\n{result['trace']}", flush=True)
+        return result
+
+    try:
+        print(f"[DRC]  {name}", flush=True)
+        proc = _run_klayout(deck, gds_path, rpt_path)
+    except subprocess.TimeoutExpired:
+        result.update({"status": "error", "message": "klayout timeout"})
+        print(f"[ERROR] {name}: klayout timeout", flush=True)
+        return result
+
+    viols = _count_lyrdb_violations(rpt_path)
+    effective = viols["effective"]
+    result.update({
+        "violations": viols,
+        "report": str(rpt_path.relative_to(out_dir)),
+        "gds": str(gds_path.relative_to(out_dir)),
+        "klayout_returncode": proc.returncode,
+        "klayout_stderr_tail": (proc.stderr or "")[-400:],
+    })
+    if proc.returncode != 0:
+        result["status"] = "error"
+        result["message"] = f"klayout exited {proc.returncode}"
+    elif effective < 0:
+        result["status"] = "error"
+        result["message"] = "report file not produced"
+    elif effective == 0:
+        result["status"] = "pass"
+        if viols["ignored"]:
+            result["message"] = f"clean (ignored {viols['ignored']} density/area)"
+    else:
+        result["status"] = "fail"
+        top = ", ".join(f"{r}:{n}" for r, n in sorted(viols["by_rule"].items(), key=lambda kv: -kv[1])[:3])
+        result["message"] = f"{effective} DRC violation(s) [{top}]"
+    print(f"[{result['status'].upper()}] {name}: {result.get('message', 'clean')}", flush=True)
+    return result
+
+
 def _write_junit(results: List[dict], pdk: str, out: Path) -> None:
     suite = ET.Element(
         "testsuite",
@@ -261,14 +337,20 @@ def main() -> int:
         default=None,
         help=f"Path to the cell parameter CSV (default: {DEFAULT_PARAM_DIR}/ci_drc_<pdk>.csv).",
     )
+    parser.add_argument(
+        "--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+        help="Worker processes for parallel build+DRC (default: cpu_count-1).",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir).resolve()
     gds_dir = out_dir / "gds"
     rpt_dir = out_dir / "reports"
+    netlist_dir = out_dir / "netlists"
     out_dir.mkdir(parents=True, exist_ok=True)
     gds_dir.mkdir(parents=True, exist_ok=True)
     rpt_dir.mkdir(parents=True, exist_ok=True)
+    netlist_dir.mkdir(parents=True, exist_ok=True)
 
     deck = _drc_deck_for(args.pdk, args.deck)
     if not deck.exists():
@@ -284,67 +366,39 @@ def main() -> int:
             print(f"warning: cells not in CSV: {sorted(missing)}", file=sys.stderr)
         specs = {n: s for n, s in specs.items() if n in wanted}
 
+    # Hand cell work to a process pool so build+klayout for different cells
+    # run on different cores. Each worker imports glayout fresh; we pass the
+    # cell name + kwargs over the wire and resolve the builder by name in the
+    # worker (gdsfactory PDK state is per-process).
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    work_items = [
+        {
+            "name": name,
+            "pdk": args.pdk,
+            "deck": str(deck),
+            "kwargs": spec.kwargs,
+            "gds_path": str(gds_dir / f"{name}.gds"),
+            "rpt_path": str(rpt_dir / f"{name}.lyrdb"),
+            "netlist_path": str(netlist_dir / f"{name}.spice"),
+            "out_dir": str(out_dir),
+        }
+        for name, spec in specs.items()
+    ]
+    jobs = max(1, min(args.jobs, len(work_items)))
+    print(f"running {len(work_items)} cells with {jobs} worker(s)")
     results: List[dict] = []
-    for name, spec in specs.items():
-        result: Dict[str, Any] = {"cell": name, "pdk": args.pdk, "status": "skip"}
-        gds_path = gds_dir / f"{name}.gds"
-        rpt_path = rpt_dir / f"{name}.lyrdb"
-        try:
-            print(f"[BUILD] {name}", flush=True)
-            comp = spec.builder(pdk, **spec.kwargs)
-            # Some cells (e.g. diff_pair_ibias) return a ComponentReference;
-            # wrap into a fresh Component so we can write_gds.
-            if not hasattr(comp, "write_gds"):
-                from gdsfactory.component import Component as _Component
-                wrapper = _Component(name)
-                wrapper.add(comp)
-                wrapper.add_ports(comp.get_ports_list())
-                if hasattr(comp, "parent") and "netlist" in getattr(comp.parent, "info", {}):
-                    wrapper.info["netlist"] = comp.parent.info["netlist"]
-                comp = wrapper
-            comp.name = name
-            comp.write_gds(str(gds_path))
-        except Exception as exc:
-            tb = traceback.format_exc()
-            result.update({"status": "error", "message": f"build failed: {exc}", "trace": tb})
-            results.append(result)
-            print(f"[ERROR] {name}: build failed\n{tb}")
-            continue
-
-        try:
-            print(f"[DRC]  {name}", flush=True)
-            proc = _run_klayout(deck, gds_path, rpt_path)
-        except subprocess.TimeoutExpired:
-            result.update({"status": "error", "message": "klayout timeout"})
-            results.append(result)
-            print(f"[ERROR] {name}: klayout timeout")
-            continue
-
-        viols = _count_lyrdb_violations(rpt_path)
-        effective = viols["effective"]
-        result.update({
-            "violations": viols,
-            "report": str(rpt_path.relative_to(out_dir)),
-            "gds": str(gds_path.relative_to(out_dir)),
-            "klayout_returncode": proc.returncode,
-            "klayout_stderr_tail": (proc.stderr or "")[-400:],
-        })
-        if proc.returncode != 0:
-            result["status"] = "error"
-            result["message"] = f"klayout exited {proc.returncode}"
-        elif effective < 0:
-            result["status"] = "error"
-            result["message"] = "report file not produced"
-        elif effective == 0:
-            result["status"] = "pass"
-            if viols["ignored"]:
-                result["message"] = f"clean (ignored {viols['ignored']} density/area)"
-        else:
-            result["status"] = "fail"
-            top = ", ".join(f"{r}:{n}" for r, n in sorted(viols["by_rule"].items(), key=lambda kv: -kv[1])[:3])
-            result["message"] = f"{effective} DRC violation(s) [{top}]"
-        results.append(result)
-        print(f"[{result['status'].upper()}] {name}: {result.get('message', 'clean')}")
+    if jobs == 1:
+        for item in work_items:
+            results.append(_run_one_cell(item))
+    else:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            futures = {pool.submit(_run_one_cell, item): item["name"] for item in work_items}
+            for fut in as_completed(futures):
+                results.append(fut.result())
+    # Stable order so summary/junit are deterministic regardless of completion order.
+    name_order = {n: i for i, n in enumerate(specs.keys())}
+    results.sort(key=lambda r: name_order.get(r["cell"], len(name_order)))
 
     summary = {
         "pdk": args.pdk,

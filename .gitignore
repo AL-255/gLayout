@@ -247,3 +247,10 @@ cython_debug/
 /.drc-cache/
 .cursor/
 /.claude/
+
+# magic / netgen extract artifacts that get dropped in the cwd by lvs_netgen
+*.ext
+*.nodes
+*.res.ext
+*.lvsmag
+*.sim

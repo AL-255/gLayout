@@ -181,10 +181,23 @@ def  low_voltage_cmirror(
     top_level << c_route(pdk, gate_1_via.ports["top_met_S"], gate_3_via.ports["top_met_S"], extension=(1.2*width[0]+0.6), cglayer='met2')
     top_level << c_route(pdk, gate_2_via.ports["top_met_S"], gate_4_via.ports["top_met_S"], extension=(1.2*width[0]-0.6), cglayer='met2')
     
-    # PDK-aware tie route width — gf180 met1 min_width is 0.23, sky130 met1 (li1) is 0.17.
+    # Tie source to substrate. The via_stack(met1,met2) the route drops at
+    # edge1=source_W has its bottom layer (li1) at 0.17um (mcon-sized, no
+    # enclosure padding); the default 'r','c' alignment lands the mcon 0.06um
+    # to the LEFT of the fet's existing gate-top mcon, tripping sky130 ct.1.
+    # Aligning by the via's met1 (sky130) layer instead — which is 0.29um wide
+    # because of the via1↔met1 enclosure rule — shifts the mcon by exactly the
+    # 0.06um needed to coincide with the fet's gate mcon (they merge into a
+    # single 0.17x0.17 polygon, no violation).
     _tie_w = max(0.2, pdk.get_grule("met1")["min_width"])
-    top_level << straight_route(pdk, fet_1_ref.ports["multiplier_0_source_W"], fet_1_ref.ports["tie_W_top_met_W"], glayer1='met1', width=_tie_w)
-    top_level << straight_route(pdk, fet_3_ref.ports["multiplier_0_source_W"], fet_3_ref.ports["tie_W_top_met_W"], glayer1='met1', width=_tie_w)
+    for fet_ref in (fet_1_ref, fet_3_ref):
+        top_level << straight_route(
+            pdk,
+            fet_ref.ports["multiplier_0_source_W"],
+            fet_ref.ports["tie_W_top_met_W"],
+            glayer1='met1', width=_tie_w,
+            via1_alignment_layer='met2',
+        )
     
 
     top_level.add_ports(bias_fvf_ref.get_ports_list(), prefix="M_1_")
