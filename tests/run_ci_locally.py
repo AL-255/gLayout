@@ -31,7 +31,7 @@ LVS_DIR = CACHE / "lvs"
 
 # Default sets — match the CI workflow matrices.
 DEFAULT_DRC_PDKS = ("sky130", "gf180")
-DEFAULT_LVS_PDKS = ("sky130",)  # gf180 LVS path is incomplete; mirror lvs.yml
+DEFAULT_LVS_PDKS = ("sky130", "gf180")  # both PDKs supported; mirrors lvs.yml
 
 IMAGE = "hpretl/iic-osic-tools:latest"
 

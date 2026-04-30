@@ -42,10 +42,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Only sky130 has a complete LVS path in glayout today; gf180's LVS
-        # support is partial (see SetupPDKFiles in mappedpdk.py). Add gf180
-        # back to the matrix once the gf180 LVS path is wired up.
-        pdk: [sky130]
+        # Both PDKs run LVS via magic+netgen. (`SetupPDKFiles` in mappedpdk.py
+        # raises NotImplementedError for gf180 only when its LVS files are
+        # passed as None — gf180_mapped.py supplies them all explicitly, so
+        # the gf180 path is fully wired.)
+        pdk: [sky130, gf180]
 
     defaults:
       run:

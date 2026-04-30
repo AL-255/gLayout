@@ -23,6 +23,65 @@ from glayout.spice import Netlist
 from glayout.cells.composite.opamp.opamp_twostage import opamp_twostage
 from glayout.cells.elementary.current_mirror import current_mirror_netlist
 
+
+def add_opamp_labels(opamp_in: Component, pdk: MappedPDK) -> Component:
+    """Drop pin/label rectangles on the seven top-level signals so netgen LVS
+    can match them to the schematic's named pins (VDD, GND, DIFFPAIR_BIAS, VP,
+    VN, CS_BIAS, VOUT). Without these, magic extracts auto-named nodes and
+    netgen cannot disambiguate three of the seven pins by connectivity alone.
+
+    Designed for the ``add_output_stage=False`` topology (the schematic emitted
+    by ``opamp_twostage_netlist``). Each label is anchored at an existing port
+    on the matching metal layer; only the metal-pin/metal-label glayers used.
+    """
+    opamp_in.unlock()
+
+    # Pin glayer must match the pin rectangle's actual layer in opamp_twostage,
+    # otherwise magic associates the label with the wrong (or no) metal:
+    #   vddpin: met4, vbias1 (DIFFPAIR_BIAS): met3, vbias2 (CS_BIAS): met5,
+    #   minusi_pin: met3, plusi_pin: met3, gndpin: met4 (in diff_pair_stackedcmirror).
+    # commonsource_output_E sits on the c_route's met2 connector.
+    #
+    # Anchor at the GEOMETRIC CENTER of each pin rectangle (computed from two
+    # opposite-edge ports) rather than an edge port. Edge anchors put half of
+    # the label rect outside the metal, which causes magic to associate the
+    # label with whichever neighboring metal it happened to overlap.
+    placements = [
+        # (port_a, port_b, label_text, glayer)  --  port_a and port_b are
+        # opposite edges; we anchor at their midpoint.
+        ("pin_vdd_e1",               "pin_vdd_e3",               "VDD",           "met4"),
+        ("pin_diffpairibias_e1",     "pin_diffpairibias_e3",     "DIFFPAIR_BIAS", "met3"),
+        ("pin_commonsourceibias_e1", "pin_commonsourceibias_e3", "CS_BIAS",       "met5"),
+        ("pin_plus_e1",              "pin_plus_e3",              "VP",            "met3"),
+        ("pin_minus_e1",             "pin_minus_e3",             "VN",            "met3"),
+        ("pin_gnd_W",                "pin_gnd_E",                "GND",           "met4"),
+        # commonsource_output_E only has a single port; anchor directly there.
+        ("commonsource_output_E",    None,                       "VOUT",          "met2"),
+    ]
+    for port_a, port_b, text, glayer in placements:
+        if port_a not in opamp_in.ports:
+            continue
+        try:
+            pin_layer = pdk.get_glayer(f"{glayer}_pin")
+            label_layer = pdk.get_glayer(f"{glayer}_label")
+        except (NotImplementedError, KeyError):
+            continue
+        a = opamp_in.ports[port_a].center
+        if port_b and port_b in opamp_in.ports:
+            b = opamp_in.ports[port_b].center
+            cx, cy = (float(a[0]) + float(b[0])) / 2.0, (float(a[1]) + float(b[1])) / 2.0
+        else:
+            cx, cy = float(a[0]), float(a[1])
+        # Tiny label rect, fully inside the metal. Build fresh per call so the
+        # gdsfactory rectangle cache doesn't mix labels across cells.
+        s = 0.05
+        rect = Component(name=f"opamp_pin_{text}")
+        rect.add_polygon([(-s, -s), (s, -s), (s, s), (-s, s)], layer=pin_layer)
+        rect.add_label(text=text, layer=label_layer, position=(0.0, 0.0))
+        ref = rect.ref(position=(cx, cy))
+        opamp_in.add(ref)
+    return opamp_in.flatten()
+
 def opamp_output_stage_netlist(pdk: MappedPDK, output_amp_fet_ref: ComponentReference, biasParams: list) -> Netlist:
     bias_netlist = current_mirror_netlist(pdk, biasParams[0], biasParams[1], biasParams[2])
 
@@ -199,7 +258,8 @@ def opamp(
         opamp_top, output_stage_netlist = __add_output_stage(pdk, opamp_top, output_stage_params, output_stage_bias, rmult)
         opamp_top.info['netlist'] = opamp_netlist(opamp_top.info['netlist'], output_stage_netlist)
 
-    # return
+    # add LVS pin/label rects so netgen can name-match the 7 top-level signals
+    opamp_top = add_opamp_labels(opamp_top, pdk)
     return rename_ports_by_orientation(component_snap_to_grid(opamp_top))
 
 

@@ -126,7 +126,7 @@ def  flipped_voltage_follower(
     """
    
     #top level component
-    top_level = Component(name="flipped_voltage_follower")
+    top_level = Component()
 
     #two fets
     device_map = {
