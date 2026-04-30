@@ -141,14 +141,39 @@ def  flipped_voltage_follower(
     
     fet_1 = device(pdk, width=width[0], fingers=fingers[0], multipliers=multipliers[0], with_dummy=dummy_1, with_substrate_tap=False, length=length[0], tie_layers=tie_layers1, sd_rmult=sd_rmult, **kwargs)
     fet_2 = device(pdk, width=width[1], fingers=fingers[1], multipliers=multipliers[1], with_dummy=dummy_2, with_substrate_tap=False, length=length[1], tie_layers=tie_layers2, sd_rmult=sd_rmult, **kwargs)
-    well = "pwell" if device == nmos else "nwell" 
+    well = "pwell" if device == nmos else "nwell"
+    sd_layer = "p+s/d" if device == nmos else "n+s/d"
     fet_1_ref = top_level << fet_1
-    fet_2_ref = top_level << fet_2 
+    fet_2_ref = top_level << fet_2
 
     #Relative move
     ref_dimensions = evaluate_bbox(fet_2)
     if placement == "horizontal":
-        fet_2_ref.movex(fet_1_ref.xmax + ref_dimensions[0]/2 + pdk.util_max_metal_seperation()-0.5)
+        # Legacy formula `metal_sep - 0.5` overlaps the two fet bboxes so their
+        # pwells merge. Trim the overlap slightly (-0.46 instead of -0.5) so the
+        # fets' inner S/D m2 finger contacts respect the strictest PDK m2
+        # spacing — gf180 M2.2a (0.28um). Sky130 m2 spacing (0.14um) is well
+        # under the resulting gap either way.
+        fet_2_ref.movex(fet_1_ref.xmax + ref_dimensions[0]/2 + pdk.util_max_metal_seperation()-0.46)
+        # The two fets' welltie tap-implant rings end up `2*well_enc - bbox_overlap`
+        # apart at their inner edges. On stricter PDKs (gf180 PP.2 = 0.4um) that
+        # gap trips a min-spacing rule. Bridge the implants with a thin rectangle
+        # so they merge into one polygon — geometrically inert (it sits inside
+        # the merged pwell, on top of existing tap diffusion area), DRC-clean.
+        well_enc = pdk.get_grule(well, "active_tap")["min_enclosure"]
+        fet1_pp_right = fet_1_ref.xmax - well_enc
+        fet2_pp_left = fet_2_ref.xmin + well_enc
+        if fet2_pp_left > fet1_pp_right:
+            bridge_x = (fet1_pp_right + fet2_pp_left) / 2
+            bridge_w = (fet2_pp_left - fet1_pp_right) + 0.04
+            bridge_h = (fet_1_ref.ymax - fet_1_ref.ymin) - 2 * well_enc
+            bridge_y = (fet_1_ref.ymax + fet_1_ref.ymin) / 2
+            bridge = top_level << rectangle(
+                size=(bridge_w, bridge_h),
+                layer=pdk.get_glayer(sd_layer),
+                centered=True,
+            )
+            bridge.movex(bridge_x).movey(bridge_y)
     if placement == "vertical":
         fet_2_ref.movey(fet_1_ref.ymin - ref_dimensions[1]/2 - pdk.util_max_metal_seperation()-1)
     

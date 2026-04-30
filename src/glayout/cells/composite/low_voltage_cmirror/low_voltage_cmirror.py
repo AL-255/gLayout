@@ -178,8 +178,12 @@ def  low_voltage_cmirror(
     top_level << straight_route(pdk, fet_3_ref.ports["multiplier_0_gate_E"], gate_3_via.ports["bottom_met_W"])
     top_level << straight_route(pdk, fet_4_ref.ports["multiplier_0_gate_E"], gate_4_via.ports["bottom_met_W"])
 
-    top_level << c_route(pdk, gate_1_via.ports["top_met_S"], gate_3_via.ports["top_met_S"], extension=(1.2*width[0]+0.6), cglayer='met2')
-    top_level << c_route(pdk, gate_2_via.ports["top_met_S"], gate_4_via.ports["top_met_S"], extension=(1.2*width[0]-0.6), cglayer='met2')
+    # Spread the two south-going gate c_routes wider so their horizontal
+    # met2 strokes respect gf180 M2.2a (0.28um). Bumping the offset from
+    # ±0.6 to ±1.0 gives ~0.4um center-to-center spacing on top of the
+    # 0.5um stroke width — clear of the rule on either PDK.
+    top_level << c_route(pdk, gate_1_via.ports["top_met_S"], gate_3_via.ports["top_met_S"], extension=(1.2*width[0]+1.0), cglayer='met2')
+    top_level << c_route(pdk, gate_2_via.ports["top_met_S"], gate_4_via.ports["top_met_S"], extension=(1.2*width[0]-1.0), cglayer='met2')
     
     # Tie source to substrate. The via_stack(met1,met2) the route drops at
     # edge1=source_W has its bottom layer (li1) at 0.17um (mcon-sized, no
