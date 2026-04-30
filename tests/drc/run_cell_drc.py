@@ -216,11 +216,94 @@ def _run_klayout(deck: Path, gds: Path, report: Path) -> subprocess.CompletedPro
     return subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
 
-def _run_one_cell(item: dict) -> dict:
-    """Build a single cell, write GDS+netlist, run klayout DRC. Designed to be
-    invoked via ProcessPoolExecutor so each cell runs on its own core.
+_MAGIC_RULE_RE = _re.compile(r"^[A-Za-z]")
+_MAGIC_COORD_RE = _re.compile(r"^[0-9-]")
 
-    item keys: name, pdk, deck, kwargs, gds_path, rpt_path, netlist_path, out_dir
+
+def _count_magic_violations(report: Path) -> dict:
+    """Parse a magic DRC report (the format ``custom_drc_save_report`` writes
+    in ``pdk.drc_magic``). Returns the same shape as ``_count_lyrdb_violations``
+    so JUnit/summary code can stay agnostic.
+    """
+    if not report.exists():
+        return {"total": -1, "effective": -1, "ignored": 0, "by_rule": {}, "ignored_by_rule": {}}
+    text = report.read_text()
+    by_rule: dict[str, int] = {}
+    ignored_by_rule: dict[str, int] = {}
+    current_rule = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("---"):
+            continue
+        # Header line like "{cell} count: N" — ignore.
+        if "count:" in s and ":" in s.split("count:", 1)[0]:
+            continue
+        if _MAGIC_RULE_RE.match(s):
+            current_rule = s
+            continue
+        if _MAGIC_COORD_RE.match(s) and current_rule:
+            if _is_ignored_rule(current_rule, current_rule):
+                ignored_by_rule[current_rule] = ignored_by_rule.get(current_rule, 0) + 1
+            else:
+                by_rule[current_rule] = by_rule.get(current_rule, 0) + 1
+    return {
+        "total": sum(by_rule.values()) + sum(ignored_by_rule.values()),
+        "effective": sum(by_rule.values()),
+        "ignored": sum(ignored_by_rule.values()),
+        "by_rule": by_rule,
+        "ignored_by_rule": ignored_by_rule,
+    }
+
+
+def _run_magic_drc(item: dict, pdk, comp_name: str, gds_path: Path, magic_dir: Path) -> dict:
+    """Invoke ``pdk.drc_magic`` on the GDS produced by the build phase. Returns
+    a result dict with the same shape as the klayout per-cell result.
+    """
+    name = item["name"]
+    pdk_name = item["pdk"]
+    out_dir = Path(item["out_dir"])
+    res: Dict[str, Any] = {"cell": name, "pdk": pdk_name, "engine": "magic", "status": "skip"}
+    rpt_dir = magic_dir / "drc" / comp_name
+    rpt_path = rpt_dir / f"{comp_name}.rpt"
+    try:
+        print(f"[MAGIC]{name}", flush=True)
+        pdk.drc_magic(
+            layout=str(gds_path),
+            design_name=comp_name,
+            output_file=str(magic_dir),
+        )
+    except Exception as exc:
+        res.update({"status": "error", "message": f"magic drc failed: {exc}", "trace": traceback.format_exc()})
+        print(f"[ERROR] {name}: magic drc failed: {exc}", flush=True)
+        return res
+    viols = _count_magic_violations(rpt_path)
+    effective = viols["effective"]
+    res.update({
+        "violations": viols,
+        "report": str(rpt_path.relative_to(out_dir)) if rpt_path.exists() else None,
+    })
+    if effective < 0:
+        res["status"] = "error"
+        res["message"] = "magic report not produced"
+    elif effective == 0:
+        res["status"] = "pass"
+        if viols["ignored"]:
+            res["message"] = f"clean (ignored {viols['ignored']} density/area)"
+    else:
+        res["status"] = "fail"
+        top = ", ".join(f"{r}:{n}" for r, n in sorted(viols["by_rule"].items(), key=lambda kv: -kv[1])[:3])
+        res["message"] = f"{effective} magic violation(s) [{top}]"
+    print(f"[MAGIC:{res['status'].upper()}] {name}: {res.get('message', 'clean')}", flush=True)
+    return res
+
+
+def _run_one_cell(item: dict) -> dict:
+    """Build a single cell, write GDS+netlist, run klayout DRC and (optionally)
+    magic DRC. Designed to be invoked via ProcessPoolExecutor so each cell
+    runs on its own core.
+
+    item keys: name, pdk, deck, kwargs, gds_path, rpt_path, netlist_path,
+               out_dir, engines (list[str]), magic_dir (str|None)
     """
     name = item["name"]
     pdk_name = item["pdk"]
@@ -257,37 +340,63 @@ def _run_one_cell(item: dict) -> dict:
         print(f"[ERROR] {name}: build failed\n{result['trace']}", flush=True)
         return result
 
-    try:
-        print(f"[DRC]  {name}", flush=True)
-        proc = _run_klayout(deck, gds_path, rpt_path)
-    except subprocess.TimeoutExpired:
-        result.update({"status": "error", "message": "klayout timeout"})
-        print(f"[ERROR] {name}: klayout timeout", flush=True)
-        return result
+    engines = item.get("engines") or ["klayout"]
+    engine_results: Dict[str, Dict[str, Any]] = {}
 
-    viols = _count_lyrdb_violations(rpt_path)
-    effective = viols["effective"]
-    result.update({
-        "violations": viols,
-        "report": str(rpt_path.relative_to(out_dir)),
-        "gds": str(gds_path.relative_to(out_dir)),
-        "klayout_returncode": proc.returncode,
-        "klayout_stderr_tail": (proc.stderr or "")[-400:],
-    })
-    if proc.returncode != 0:
+    if "klayout" in engines:
+        try:
+            print(f"[DRC]  {name}", flush=True)
+            proc = _run_klayout(deck, gds_path, rpt_path)
+            viols = _count_lyrdb_violations(rpt_path)
+            effective = viols["effective"]
+            klayout_res: Dict[str, Any] = {
+                "engine": "klayout",
+                "violations": viols,
+                "report": str(rpt_path.relative_to(out_dir)),
+                "klayout_returncode": proc.returncode,
+                "klayout_stderr_tail": (proc.stderr or "")[-400:],
+            }
+            if proc.returncode != 0:
+                klayout_res["status"] = "error"
+                klayout_res["message"] = f"klayout exited {proc.returncode}"
+            elif effective < 0:
+                klayout_res["status"] = "error"
+                klayout_res["message"] = "report file not produced"
+            elif effective == 0:
+                klayout_res["status"] = "pass"
+                if viols["ignored"]:
+                    klayout_res["message"] = f"clean (ignored {viols['ignored']} density/area)"
+            else:
+                klayout_res["status"] = "fail"
+                top = ", ".join(f"{r}:{n}" for r, n in sorted(viols["by_rule"].items(), key=lambda kv: -kv[1])[:3])
+                klayout_res["message"] = f"{effective} DRC violation(s) [{top}]"
+        except subprocess.TimeoutExpired:
+            klayout_res = {"engine": "klayout", "status": "error", "message": "klayout timeout"}
+        engine_results["klayout"] = klayout_res
+        print(f"[KLAYOUT:{klayout_res['status'].upper()}] {name}: {klayout_res.get('message', 'clean')}", flush=True)
+
+    if "magic" in engines:
+        magic_dir = Path(item["magic_dir"]) if item.get("magic_dir") else (out_dir / "magic")
+        magic_dir.mkdir(parents=True, exist_ok=True)
+        pdk_obj = _resolve_pdk(pdk_name)
+        engine_results["magic"] = _run_magic_drc(item, pdk_obj, name, gds_path, magic_dir)
+
+    # Merge into the cell-level result. Cell is "pass" iff every engine passes;
+    # if any engine errors, the cell is "error"; otherwise "fail".
+    statuses = [er["status"] for er in engine_results.values()]
+    if "error" in statuses:
         result["status"] = "error"
-        result["message"] = f"klayout exited {proc.returncode}"
-    elif effective < 0:
-        result["status"] = "error"
-        result["message"] = "report file not produced"
-    elif effective == 0:
-        result["status"] = "pass"
-        if viols["ignored"]:
-            result["message"] = f"clean (ignored {viols['ignored']} density/area)"
-    else:
+    elif "fail" in statuses:
         result["status"] = "fail"
-        top = ", ".join(f"{r}:{n}" for r, n in sorted(viols["by_rule"].items(), key=lambda kv: -kv[1])[:3])
-        result["message"] = f"{effective} DRC violation(s) [{top}]"
+    else:
+        result["status"] = "pass"
+    result["engines"] = engine_results
+    result["gds"] = str(gds_path.relative_to(out_dir))
+    # Pick the most informative engine message (failing engine first, then passing).
+    msg_engine = next((e for e, er in engine_results.items() if er["status"] in ("fail", "error")), None) \
+        or next((e for e, er in engine_results.items() if er["status"] == "pass"), None)
+    if msg_engine:
+        result["message"] = f"{msg_engine}: {engine_results[msg_engine].get('message', engine_results[msg_engine]['status'])}"
     print(f"[{result['status'].upper()}] {name}: {result.get('message', 'clean')}", flush=True)
     return result
 
@@ -341,16 +450,26 @@ def main() -> int:
         "--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2) - 1),
         help="Worker processes for parallel build+DRC (default: cpu_count-1).",
     )
+    parser.add_argument(
+        "--engine",
+        choices=["klayout", "magic", "both"],
+        default="klayout",
+        help="DRC engine(s) to run per cell. 'both' runs klayout and magic in sequence per worker.",
+    )
     args = parser.parse_args()
+    engines = ["klayout", "magic"] if args.engine == "both" else [args.engine]
 
     out_dir = Path(args.out_dir).resolve()
     gds_dir = out_dir / "gds"
     rpt_dir = out_dir / "reports"
     netlist_dir = out_dir / "netlists"
+    magic_dir = out_dir / "magic" if "magic" in engines else None
     out_dir.mkdir(parents=True, exist_ok=True)
     gds_dir.mkdir(parents=True, exist_ok=True)
     rpt_dir.mkdir(parents=True, exist_ok=True)
     netlist_dir.mkdir(parents=True, exist_ok=True)
+    if magic_dir is not None:
+        magic_dir.mkdir(parents=True, exist_ok=True)
 
     deck = _drc_deck_for(args.pdk, args.deck)
     if not deck.exists():
@@ -382,6 +501,8 @@ def main() -> int:
             "rpt_path": str(rpt_dir / f"{name}.lyrdb"),
             "netlist_path": str(netlist_dir / f"{name}.spice"),
             "out_dir": str(out_dir),
+            "engines": engines,
+            "magic_dir": str(magic_dir) if magic_dir else None,
         }
         for name, spec in specs.items()
     ]
