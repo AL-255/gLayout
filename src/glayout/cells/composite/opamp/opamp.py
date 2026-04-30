@@ -74,7 +74,9 @@ def add_opamp_labels(opamp_in: Component, pdk: MappedPDK) -> Component:
             cx, cy = float(a[0]), float(a[1])
         # Tiny label rect, fully inside the metal. Build fresh per call so the
         # gdsfactory rectangle cache doesn't mix labels across cells.
-        s = 0.05
+        # 0.15 half-side (0.3x0.3) clears sky130 m1 min-width (0.14) and
+        # min-area (0.083um²) when the anchor lands on a met1 layer.
+        s = 0.15
         rect = Component(name=f"opamp_pin_{text}")
         rect.add_polygon([(-s, -s), (s, -s), (s, s), (-s, s)], layer=pin_layer)
         rect.add_label(text=text, layer=label_layer, position=(0.0, 0.0))

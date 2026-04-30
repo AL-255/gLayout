@@ -57,9 +57,11 @@ def __create_and_route_pins(
     extensionR = max(halfmultn_drain_routeref.ports["con_E"].center[0],halfmultp_drain_routeref.ports["con_E"].center[0])
     opamp_top << c_route(pdk, halfmultn_drain_routeref.ports["con_W"], halfmultp_drain_routeref.ports["con_W"],extension=abs(opamp_top.xmin-extensionL)+2,cwidth=2)
     n_to_p_output_route = opamp_top << c_route(pdk, halfmultn_drain_routeref.ports["con_E"], halfmultp_drain_routeref.ports["con_E"],extension=abs(opamp_top.xmax-extensionR)+2,cwidth=2)
-    # top nwell taps to vdd, top p substrate taps to gnd
-    opamp_top << straight_route(pdk, opamp_top.ports["commonsource_cmirror_output_L_tie_N_top_met_N"], opamp_top.ports["pcomps_top_ptap_S_top_met_S"], width=5)
-    opamp_top << straight_route(pdk, opamp_top.ports["commonsource_cmirror_output_R_tie_N_top_met_N"], opamp_top.ports["pcomps_top_ptap_S_top_met_S"], width=5)
+    # top nwell taps to vdd, top p substrate taps to gnd. Keep <3um wide so
+    # sky130's m1.3ab huge-metal rule isn't tripped (the rail otherwise
+    # picks up tiny mcon neighbours at the diff_pair corners <0.28um away).
+    opamp_top << straight_route(pdk, opamp_top.ports["commonsource_cmirror_output_L_tie_N_top_met_N"], opamp_top.ports["pcomps_top_ptap_S_top_met_S"], width=2.5)
+    opamp_top << straight_route(pdk, opamp_top.ports["commonsource_cmirror_output_R_tie_N_top_met_N"], opamp_top.ports["pcomps_top_ptap_S_top_met_S"], width=2.5)
     L_toptapn_route = opamp_top.ports["commonsource_Pamp_L_tie_N_top_met_N"]
     R_toptapn_route = opamp_top.ports["commonsource_Pamp_R_tie_N_top_met_N"]
     opamp_top << straight_route(pdk, movex(vddpin.ports["e4"],destination=L_toptapn_route.center[0]), L_toptapn_route, glayer1="met3",fullbottom=True)
@@ -117,13 +119,18 @@ def __add_mimcap_arr(pdk: MappedPDK, opamp_top: Component, mim_cap_size, mim_cap
     displace_fact = max(max_metalsep,pdk.get_grule("capmet")["min_separation"])
     mimcaps_ref.movex(pdk.snap_to_2xgrid(opamp_top.xmax + displace_fact + mim_cap_size[0]/2))
     mimcaps_ref.movey(pdk.snap_to_2xgrid(ymin + mim_cap_size[1]/2))
-    # connect mimcap to gnd
+    # connect mimcap to gnd. Route the c-route's vertical rails on met2
+    # (e1glayer/e2glayer) so the metal in-plane with the cap m3 plate is
+    # only the small via_stack at port2 (which fits inside the plate). The
+    # rails proper are on met2, dodging sky130's m3.3ab "huge metal"
+    # boundary that fires when a non-huge m3 rail abuts the huge plate.
     port1 = opamp_top.ports["pcomps_mimcap_connection_con_N"]
     port2 = mimcaps_ref.ports["row"+str(int(mim_cap_rows)-1)+"_col0_bottom_met_N"]
     cref2_extension = max_metalsep + opamp_top.ymax - max(port1.center[1], port2.center[1])
-    opamp_top << c_route(pdk,port1,port2, extension=cref2_extension, fullbottom=True)
+    opamp_top << c_route(pdk,port1,port2, extension=cref2_extension, fullbottom=True, e1glayer="met2", e2glayer="met2")
+    # L_route legs on met2 too (h/vglayer="met2") for the same reason.
     intermediate_output = set_port_orientation(n_to_p_output_route.ports["con_S"],"E")
-    opamp_top << L_route(pdk, mimcaps_ref.ports["row0_col0_top_met_S"], intermediate_output, hwidth=3)
+    opamp_top << L_route(pdk, mimcaps_ref.ports["row0_col0_top_met_S"], intermediate_output, hwidth=3, hglayer="met2", vglayer="met2")
     opamp_top.add_ports(mimcaps_ref.get_ports_list(),prefix="mimcap_")
     # add the cs output as a port
     opamp_top.add_port(name="commonsource_output_E", port=intermediate_output)
