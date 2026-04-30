@@ -24,10 +24,16 @@ jobs:
     # DRC, so allow both success and failure conclusions.
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled' }}
 
-    # download-artifact across workflow runs needs read access to actions.
+    # download-artifact across workflow runs needs actions:read; the JUnit
+    # publisher (mikepenz/action-junit-report) needs checks:write to post the
+    # report check. workflow_run uses the parent's token, which is read-only
+    # by default once any `permissions:` block is declared, so checks:write
+    # must be granted explicitly — otherwise the publish step errors with
+    # "Resource not accessible by integration" and no report shows in the UI.
     permissions:
       contents: read
       actions: read
+      checks: write
 
     container:
       image: hpretl/iic-osic-tools:latest
