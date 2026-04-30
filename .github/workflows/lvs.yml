@@ -1,0 +1,140 @@
+name: Cell LVS
+
+# Triggered automatically when the DRC workflow finishes (success OR failure).
+# DRC produces the GDS + reference netlists, so LVS does not have to rebuild
+# the cells — it just downloads the DRC artifacts and runs netgen.
+#
+# Also runnable on demand to re-run LVS against the latest DRC artifact.
+on:
+  workflow_run:
+    workflows: ["Cell DRC"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      drc_run_id:
+        description: "GitHub Actions run id of the DRC workflow whose artifacts to consume (defaults to latest successful run)."
+        required: false
+
+jobs:
+  lvs:
+    name: LVS (${{ matrix.pdk }})
+    runs-on: ubuntu-22.04
+    # Skip when this run was kicked off by a DRC failure — DRC artifacts may
+    # still be partial, but we DO want to run LVS on the cells that passed
+    # DRC, so allow both success and failure conclusions.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled' }}
+
+    # download-artifact across workflow runs needs read access to actions.
+    permissions:
+      contents: read
+      actions: read
+
+    container:
+      image: hpretl/iic-osic-tools:latest
+      options: --user root
+      env:
+        PDK_ROOT: /foss/pdks
+        DEBIAN_FRONTEND: noninteractive
+        PYTHONUNBUFFERED: "1"
+        PYTHONPATH: ""
+        PATH: /foss/tools/bin:/foss/tools/sak:/foss/tools/kactus2:/foss/tools/klayout:/foss/tools/osic-multitool:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Only sky130 has a complete LVS path in glayout today; gf180's LVS
+        # support is partial (see SetupPDKFiles in mappedpdk.py). Add gf180
+        # back to the matrix once the gf180 LVS path is wired up.
+        pdk: [sky130]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download DRC artifact (drc-${{ matrix.pdk }})
+        uses: actions/download-artifact@v4
+        with:
+          name: drc-${{ matrix.pdk }}
+          path: drc_inputs/${{ matrix.pdk }}
+          # When triggered by workflow_run, pull the artifact from that run.
+          # Falls back to the current run when triggered manually.
+          run-id: ${{ github.event.workflow_run.id || inputs.drc_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Python 3.10 (deadsnakes)
+        run: |
+          set -euxo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            software-properties-common ca-certificates gnupg curl
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3.10 python3.10-venv
+
+      - name: Show tool versions
+        run: |
+          set -euxo pipefail
+          klayout -v
+          magic -d null -noconsole -T minimum </dev/null 2>&1 | head -5 || true
+          netgen -batch lvs -version 2>&1 | head -3 || true
+          python3.10 --version
+          ls "$PDK_ROOT"
+
+      - name: Cache python venv
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.venv
+          key: drc-venv-py310-${{ runner.os }}-${{ hashFiles('setup.py', 'src/glayout/**/*.py') }}-v1
+          restore-keys: |
+            drc-venv-py310-${{ runner.os }}-
+
+      - name: Create venv and install glayout (cache miss)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          rm -rf "$GITHUB_WORKSPACE/.venv"
+          python3.10 -m venv "$GITHUB_WORKSPACE/.venv"
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          python -m pip install --upgrade pip wheel
+          python -m pip install -e .
+
+      - name: Refresh editable install (cache hit)
+        if: steps.cache-venv.outputs.cache-hit == 'true'
+        run: |
+          set -euxo pipefail
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          python -m pip install --no-deps -e .
+
+      - name: Sanity-check DRC inputs
+        run: |
+          set -euxo pipefail
+          ls -la drc_inputs/${{ matrix.pdk }}/gds || { echo "no gds/ in DRC artifact"; exit 1; }
+          ls -la drc_inputs/${{ matrix.pdk }}/netlists || { echo "no netlists/ in DRC artifact"; exit 1; }
+
+      - name: Run cell LVS
+        run: |
+          set -euxo pipefail
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          python tests/lvs/run_cell_lvs.py \
+            --pdk ${{ matrix.pdk }} \
+            --inputs-dir drc_inputs/${{ matrix.pdk }} \
+            --out-dir lvs_results/${{ matrix.pdk }}
+
+      - name: Upload LVS artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lvs-${{ matrix.pdk }}
+          path: lvs_results/${{ matrix.pdk }}
+
+      - name: Publish JUnit summary
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: lvs_results/${{ matrix.pdk }}/junit.xml
+          check_name: LVS report (${{ matrix.pdk }})
+          require_tests: true
