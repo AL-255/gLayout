@@ -147,6 +147,10 @@ _IGNORE_PATTERNS = [
     _re.compile(r"density", _re.IGNORECASE),
     _re.compile(r"min[._\s-]*\w*\s*area", _re.IGNORECASE),
     _re.compile(r"^m\d+\.4$", _re.IGNORECASE),  # sky130 metal min-area rules: m1.4, m2.4, m3.4, m4.4
+    # gf180 DF.14: max distance from a substrate tap (pcomp outside nwell)
+    # to the nearest nfet (ncomp outside nwell). This is a chip-level
+    # latch-up constraint; a pmos-only cell can't satisfy it in isolation.
+    _re.compile(r"^DF\.14", _re.IGNORECASE),
 ]
 
 

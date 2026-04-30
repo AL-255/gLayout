@@ -139,8 +139,13 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
     pmos_bdrain_diffpair_v = align_comp_to_port(pmos_bdrain_diffpair_v, movex(pbottom_AB.ports["L_gate_S"].copy(),destination=via_location))
     pmos_bdrain_diffpair_v.movey(0-_max_metal_seperation_ps)
     pcomps_route_B_drain_extension = shared_gate_comps.xmax-ptop_AB.ports["R_drain_E"].center[0]+_max_metal_seperation_ps
-    shared_gate_comps << c_route(pdk, ptop_AB.ports["R_drain_E"], pmos_bdrain_diffpair_v.ports["bottom_met_E"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps)
-    shared_gate_comps << c_route(pdk, pbottom_AB.ports["L_drain_W"], pmos_bdrain_diffpair_v.ports["bottom_met_W"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps)
+    # Narrow these rails on gf180 — its tighter finger pitch puts the
+    # default-width (port-width) rails 0.1um apart, tripping M3.2a. sky130
+    # has wider pitch, so leave its rails at default to avoid via-enclosure
+    # gaps that show up as m1.2 when the rail is too thin.
+    _drain_w = 0.5 if pdk.name.lower() == "gf180" else None
+    shared_gate_comps << c_route(pdk, ptop_AB.ports["R_drain_E"], pmos_bdrain_diffpair_v.ports["bottom_met_E"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps, width1=_drain_w, width2=_drain_w)
+    shared_gate_comps << c_route(pdk, pbottom_AB.ports["L_drain_W"], pmos_bdrain_diffpair_v.ports["bottom_met_W"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps, width1=_drain_w, width2=_drain_w)
     shared_gate_comps.add_ports(pmos_bdrain_diffpair_v.get_ports_list(),prefix="minusvia_")
     shared_gate_comps.add_ports(mimcap_connection_ref.get_ports_list(),prefix="mimcap_connection_")
     return shared_gate_comps

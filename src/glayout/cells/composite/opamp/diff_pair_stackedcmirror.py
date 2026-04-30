@@ -72,6 +72,24 @@ def __route_bottom_ncomps_except_drain_nbias(pdk: MappedPDK, toplevel_stacked: C
     # common source
     # route to gnd the sources of cmirror
     _cref = toplevel_stacked << c_route(pdk, toplevel_stacked.ports["commonsource_cmirror_output_R_multiplier_0_source_con_S"], toplevel_stacked.ports["commonsource_cmirror_output_L_multiplier_0_source_con_S"], extension=abs(gndpin.ports["N"].center[1]-toplevel_stacked.ports["commonsource_cmirror_output_R_multiplier_0_source_con_S"].center[1]),fullbottom=True)
+    # gf180-only m2 patch: the cmirror_ref's tap-ring SW/SE corner via on
+    # m2 lands ~0.04um below the cmirror_ref source m2 column above it,
+    # leaving a sliver gap that trips m2.2a. Stamp an m2 patch at each
+    # corner that overlaps both polygons so they merge in DRC.
+    if pdk.name.lower() == "gf180":
+        from gdsfactory.components.rectangle import rectangle as _rect
+        _m2 = pdk.get_glayer("met2")
+        # Use cmirror_ref_L's drain_E port (center.x is the inner edge of
+        # cmirror_ref_L's leftmost drain column on m2; mirror for R) and
+        # multiplier_0_diff_S port (center.y is the diff's south edge,
+        # which is exactly where the gap sits).
+        _de = toplevel_stacked.ports.get("commonsource_cmirror_ref_L_multiplier_0_drain_E")
+        _ds = toplevel_stacked.ports.get("commonsource_cmirror_ref_L_multiplier_0_diff_S")
+        if _de is not None and _ds is not None:
+            _bridge_y = _ds.center[1]
+            for _sign in (-1, +1):  # L (-) and R (+)
+                _bref = toplevel_stacked << _rect(size=(0.6, 0.4), layer=_m2, centered=True)
+                _bref.movex(_sign * (abs(_de.center[0]) + 0.25)).movey(_bridge_y)
     toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["commonsource_cmirror_ref_R_multiplier_0_source_E"],_cref.ports["con_E"],glayer2="met3",via2_alignment=('c','c'))
     toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["commonsource_cmirror_ref_L_multiplier_0_source_W"],_cref.ports["con_W"],glayer2="met3",via2_alignment=('c','c'))
     # connect cmirror ref drain to cmirror output gate, then short cmirror ref drain and gate
