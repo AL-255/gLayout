@@ -14,7 +14,9 @@ jobs:
     # iic-osic-tools ships klayout, magic, netgen, and the sky130A / gf180mcuD
     # PDKs pre-installed under /foss/pdks. The image is Ubuntu 24.04 with only
     # Python 3.12, but glayout pins gdsfactory<=7.7.0 / numpy<=1.24, so we
-    # install Python 3.10 from deadsnakes and run glayout in a venv.
+    # install Python 3.10 via uv (python-build-standalone, hosted on GitHub
+    # releases) and run glayout in a venv. We previously used the deadsnakes
+    # PPA but ppa.launchpadcontent.net was too flaky for CI.
     #
     # See https://github.com/iic-jku/iic-osic-tools.
     container:
@@ -48,38 +50,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python 3.10 (deadsnakes)
+      - name: Install Python 3.10 (uv)
         run: |
           set -euxo pipefail
-          # Launchpad PPAs (deadsnakes + the mozillateam PPA baked into the
-          # image) intermittently time out from GitHub-hosted runners. Naive
-          # retries on apt-get update don't help: apt exits 0 even when an
-          # individual repo fails to fetch (it only emits `W: Failed to fetch`).
-          # So:
-          #   1. Tell apt itself to retry each fetch with a short timeout.
-          #   2. After adding the deadsnakes PPA, poll apt-cache for the target
-          #      package and re-run update until the index actually lands.
-          APT_OPTS='-o Acquire::Retries=10 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30'
-          apt-get $APT_OPTS update -qq || true
-          apt-get $APT_OPTS install -y --no-install-recommends \
-            software-properties-common ca-certificates gnupg curl
-          add-apt-repository -y ppa:deadsnakes/ppa
-          for i in 1 2 3 4 5 6; do
-            apt-get $APT_OPTS update -qq || true
-            if apt-cache show python3.10-venv >/dev/null 2>&1; then
-              break
-            fi
-            echo "deadsnakes index not yet available (attempt $i); retrying..."
-            sleep $((i*15))
-          done
-          apt-cache show python3.10-venv >/dev/null
-          apt-get $APT_OPTS install -y --no-install-recommends python3.10 python3.10-venv
+          # uv installs CPython from python-build-standalone (GitHub releases),
+          # bypassing launchpad PPAs entirely.
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.10
+          # Resolve the absolute path so later steps don't depend on PATH.
+          echo "PYTHON310=$(uv python find 3.10)" >> "$GITHUB_ENV"
 
       - name: Show tool versions
         run: |
           set -euxo pipefail
           klayout -v
-          python3.10 --version
+          "$PYTHON310" --version
           ls "$PDK_ROOT"
 
       - name: Cache python venv
@@ -89,7 +76,9 @@ jobs:
           path: ${{ github.workspace }}/.venv
           # Bust the cache when setup.py changes (deps) or the bundled DRC
           # decks change (paths embedded in glayout's editable install).
-          key: drc-venv-py310-${{ runner.os }}-${{ hashFiles('setup.py', 'src/glayout/**/*.py') }}-v1
+          # v2 = switched interpreter from deadsnakes to uv; venvs cached under
+          # v1 symlink to a now-absent /usr/bin/python3.10.
+          key: drc-venv-py310-${{ runner.os }}-${{ hashFiles('setup.py', 'src/glayout/**/*.py') }}-v2
           restore-keys: |
             drc-venv-py310-${{ runner.os }}-
 
@@ -98,7 +87,7 @@ jobs:
         run: |
           set -euxo pipefail
           rm -rf "$GITHUB_WORKSPACE/.venv"
-          python3.10 -m venv "$GITHUB_WORKSPACE/.venv"
+          "$PYTHON310" -m venv "$GITHUB_WORKSPACE/.venv"
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           python -m pip install --upgrade pip wheel
           python -m pip install -e .
