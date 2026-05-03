@@ -198,7 +198,11 @@ def diff_pair(
 	drain_bl_viatm.move(b_botl.ports["multiplier_0_drain_N"].center).movey(-1.5 * evaluate_bbox(viam2m3)[1] - metal_space)
 	# create route to drain via
 	width_drain_route = b_topr.ports["multiplier_0_drain_E"].width
-	dextension = source_routeE.xmax - b_topr.ports["multiplier_0_drain_E"].center[0] + metal_space
+	# Add an rmult-scaled margin so the drain c-bar clears the source c-bar
+	# even at higher rmult (where both bars get wider). The original
+	# `+ metal_space` left only 0.05um at rmult=2 and 0.1um at rmult=3 on
+	# gf180 (M3.2a slivers); scaling with rmult keeps a full met3 spacing.
+	dextension = source_routeE.xmax - b_topr.ports["multiplier_0_drain_E"].center[0] + (1 + rmult) * metal_space
 	bottom_extension = viam2m3.ymax + width_drain_route/2 + 2*metal_space
 	drain_br_viatm.movey(0-bottom_extension - metal_space - width_drain_route/2 - viam2m3.ymax)
 	diffpair << route_quad(drain_br_viatm.ports["top_met_N"], drain_br_via.ports["top_met_S"], layer=pdk.get_glayer("met3"))

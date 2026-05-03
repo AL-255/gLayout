@@ -254,3 +254,8 @@ cython_debug/
 *.res.ext
 *.lvsmag
 *.sim
+.*.*
+.*/
+_*.json
+out/
+drc_results/

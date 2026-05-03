@@ -28,7 +28,12 @@ def __create_sharedgatecomps(pdk: MappedPDK, rmult: int, half_pload: tuple[float
     # create the 2*2 multiplier transistors (placed twice later)
     twomultpcomps = Component("2 multiplier shared gate comps")
     pcompR = multiplier(pdk, "p+s/d", width=half_pload[0], length=half_pload[1], fingers=half_pload[2], dummy=True,rmult=rmult).copy()
-    tapref = pcompR << tapring(pdk, evaluate_bbox(pcompR,padding=0.3+pdk.get_grule("n+s/d", "active_tap")["min_enclosure"]),"n+s/d","met1","met1")
+    # Give the welltap an extra met1 min-separation on top of the original
+    # 0.3um pad — the multiplier's S/D extensions on met1 reach the bbox
+    # edge, and at gf180 rmult=1 they ended up flush against the welltap
+    # (M1.2a slivers).
+    _tap_pad = 0.3 + pdk.get_grule("n+s/d", "active_tap")["min_enclosure"] + pdk.get_grule("met1")["min_separation"]
+    tapref = pcompR << tapring(pdk, evaluate_bbox(pcompR,padding=_tap_pad),"n+s/d","met1","met1")
     pcompR.add_padding(layers=(pdk.get_glayer("nwell"),), default=pdk.get_grule("active_tap", "nwell")["min_enclosure"])
     pcompR.add_ports(tapref.get_ports_list(),prefix="welltap_")
     pcompR << straight_route(pdk,pcompR.ports["dummy_L_gsdcon_top_met_W"],pcompR.ports["welltap_W_top_met_W"],glayer2="met1")
@@ -95,6 +100,12 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
     shared_gate_comps << straight_route(pdk,LRdummyports[1],pbottom_AB.ports["R_welltap_N_top_met_S"],glayer2="met1")
     # connect p+s/d layer of the transistors
     shared_gate_comps << route_quad(LRplusdopedPorts[0],LRplusdopedPorts[-1],layer=pdk.get_glayer("p+s/d"))
+    # The 4 center multipliers leave 0.17um comp gaps between i=-2/i=-1 and
+    # between i=1/i=2 (gf180 DF.3a min comp space = 0.28um). All four are
+    # PCOMP-outside-nwell at the same psub potential, so the rule allows
+    # butting them — fill the gap with comp on the active_diff layer.
+    shared_gate_comps << route_quad(LRplusdopedPorts[1], LRplusdopedPorts[2], layer=pdk.get_glayer("active_diff"))
+    shared_gate_comps << route_quad(LRplusdopedPorts[5], LRplusdopedPorts[6], layer=pdk.get_glayer("active_diff"))
     # connect drain of the left 2 and right 2, short sources of all 4
     shared_gate_comps << route_quad(LRdrainsPorts[0],LRdrainsPorts[3],layer=LRdrainsPorts[0].layer)
     shared_gate_comps << route_quad(LRdrainsPorts[4],LRdrainsPorts[7],layer=LRdrainsPorts[0].layer)
@@ -153,12 +164,12 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
 def differential_to_single_ended_converter_netlist(pdk: MappedPDK, half_pload: tuple[float, float, int]) -> Netlist:
     return Netlist(
         circuit_name="DIFF_TO_SINGLE",
-        nodes=['VIN', 'VOUT', 'VSS', 'VSS2'],
+        nodes=['VIN', 'VOUT', 'VSS', 'VSS2', 'B'],
         source_netlist=""".subckt {circuit_name} {nodes} """ + f'l={half_pload[1]} w={half_pload[0]} mt={4*2} mb={2 * half_pload[2]} ' + """
-XTOP1 V1   VIN VSS  VSS {model} l={{l}} w={{w}} m={{mt}}
-XTOP2 VSS2 VIN VSS  VSS {model} l={{l}} w={{w}} m={{mt}}
-XBOT1 VIN  VIN V1   VSS {model} l={{l}} w={{w}} m={{mb}}
-XBOT2 VOUT VIN VSS2 VSS {model} l={{l}} w={{w}} m={{mb}}
+XTOP1 V1   VIN VSS  B {model} l={{l}} w={{w}} m={{mt}}
+XTOP2 VSS2 VIN VSS  B {model} l={{l}} w={{w}} m={{mt}}
+XBOT1 VIN  VIN V1   B {model} l={{l}} w={{w}} m={{mb}}
+XBOT2 VOUT VIN VSS2 B {model} l={{l}} w={{w}} m={{mb}}
 .ends {circuit_name}""",
         instance_format="X{name} {nodes} {circuit_name} l={length} w={width} mt={mult_top} mb={mult_bot}",
         parameters={
@@ -175,6 +186,53 @@ def differential_to_single_ended_converter(pdk: MappedPDK, rmult: int, half_ploa
     pmos_comps, ptop_AB, pbottom_AB, LRplusdopedPorts, LRgatePorts, LRdrainsPorts, LRsourcesPorts, LRdummyports = __create_sharedgatecomps(pdk, rmult,half_pload)
     clear_cache()
     pmos_comps = __route_sharedgatecomps(pdk, pmos_comps, via_xlocation, ptop_AB, pbottom_AB, LRplusdopedPorts, LRgatePorts, LRdrainsPorts, LRsourcesPorts, LRdummyports)
+
+    # Pin labels for the four schematic top-level nets (VIN, VOUT, VSS, VSS2).
+    # add_polygon + add_label are called directly on pmos_comps so the labels
+    # land at this cell's top GDS level — Magic LVS's `subcircuit top on`
+    # only promotes labels found at the top cell; labels buried inside
+    # referenced sub-cells become anonymous `Unnamed_<hash>/<label>` nets.
+    _pin_specs = [
+        # VIN = shared gate net (all four PMOS gates are tied through the
+        # route_quad on met2 + the L/R c_routes).
+        ("VIN",  "ptopAB_L_gate_W",                 "met2"),
+        # VSS = source short bus — picked off the via stack's met2 bottom
+        # (the FET-connected source net, not the floating top of the via).
+        ("VSS",  "2L2Rsrcvia_bottom_met_N",         "met2"),
+        # VSS2 = TOP2-drain / BOT2-source cascode node — exposed by
+        # mimcap_connection_ref's c_route on met3.
+        ("VSS2", "mimcap_connection_con_N",         "met3"),
+        # VOUT = BOT2 drain. The minus-via stack carries this net; label
+        # the met2 bottom where the diffpair plugs in below.
+        ("VOUT", "minusvia_bottom_met_N",           "met2"),
+        # B = bulk net (nwell tap of all four PMOS).
+        ("B",    "ptopAB_L_welltap_N_top_met_N",    "met1"),
+    ]
+    _hs = 0.135  # half-side of the 0.27um label rect
+    for _text, _portname, _glayer in _pin_specs:
+        _port = pmos_comps.ports[_portname]
+        _x, _y = float(_port.center[0]), float(_port.center[1])
+        # Shift the label centre from the port-edge into the metal along
+        # the port-orientation normal so it overlaps the underlying polygon.
+        _orient = round(_port.orientation) % 360
+        if _orient == 90:    # N-facing port → metal below
+            _x_c, _y_c = _x, _y - _hs
+        elif _orient == 270: # S-facing → metal above
+            _x_c, _y_c = _x, _y + _hs
+        elif _orient == 0:   # E-facing → metal west
+            _x_c, _y_c = _x - _hs, _y
+        else:                # W-facing → metal east
+            _x_c, _y_c = _x + _hs, _y
+        pmos_comps.add_polygon(
+            [(_x_c - _hs, _y_c - _hs), (_x_c + _hs, _y_c - _hs),
+             (_x_c + _hs, _y_c + _hs), (_x_c - _hs, _y_c + _hs)],
+            layer=pdk.get_glayer(f"{_glayer}_pin"),
+        )
+        pmos_comps.add_label(
+            text=_text,
+            position=(_x_c, _y_c),
+            layer=pdk.get_glayer(f"{_glayer}_label"),
+        )
 
     pmos_comps.info['netlist'] = differential_to_single_ended_converter_netlist(pdk, half_pload)
 

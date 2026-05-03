@@ -47,9 +47,15 @@ def diff_pair_ibias_netlist(center_diffpair: Component, current_mirror: Componen
         []
     )
 
+    # Cmirror bulk tied to the top-level B port (NOT VSS): in the layout the
+    # cmirror's tap ring connects to the global substrate, which is the same
+    # net as the diff_pair's substrate-tap ring (top-level B). Mapping it to
+    # VSS instead would split the dummies' bulks across two schematic nets
+    # while the layout has them all on one — that single-group difference
+    # is the only Magic LVS mismatch on this cell.
     cmirror_ref = netlist.connect_netlist(
         current_mirror.info['netlist'],
-        [('VREF', 'IBIAS'), ('B', 'VSS')]
+        [('VREF', 'IBIAS'), ('B', 'B')]
     )
 
     netlist.connect_subnets(
@@ -76,8 +82,8 @@ def diff_pair_ibias(
     pdk: MappedPDK,
     half_diffpair_params: tuple[float, float, int],
     diffpair_bias: tuple[float, float, int],
-    rmult: int,
-    with_antenna_diode_on_diffinputs: int,
+    rmult: int = 1,
+    with_antenna_diode_on_diffinputs: int = 0,
 ) -> Component:
     # create and center diffpair
     diffpair_i_ = Component("temp diffpair and current source")
@@ -172,12 +178,17 @@ def diff_pair_ibias(
         viaoffset=False,
         fullbottom=False,
     )
+    # Match gate_short's `extension=3*metal_sep` for breathing room, and
+    # `viaoffset=None` to keep the via stack flush with the e1_extension stub.
+    # Original `viaoffset=False` negates the flush amount, leaving a ~30nm gap
+    # between the W-side via and its met3 stub on the smaller rmult layouts —
+    # which trips m2.2 (met2 spacing in the sky130 deck = met3 in glayout).
     srcshort = cmirror << c_route(
         pdk,
         cmirror.ports["A_source_W"],
         cmirror.ports["B_source_W"],
-        extension=metal_sep,
-        viaoffset=False,
+        extension=3 * metal_sep,
+        viaoffset=None,
     )
     cmirror.add_ports(srcshort.get_ports_list(), prefix="purposegndports")
     # current mirror netlist
@@ -210,8 +221,66 @@ def diff_pair_ibias(
     diffpair_i_.add_ports([purposegndPort])
     diffpair_i_.add_ports(tailcurrent_ref.get_ports_list(), prefix="ibias_")
 
-    diffpair_i_ref = prec_ref_center(diffpair_i_)
+    # VTAIL connection: schematic ties the diff_pair sources (VTAIL) to the
+    # cmirror's B-side drain (VOUT). Without this metal the two halves are
+    # electrically isolated and LVS sees a topology mismatch. Route from the
+    # source-bar bottom (con_S) to the cmirror drain on each side so the
+    # wire stays in the gap below the diffpair. Width is left to default
+    # (= port width) so the route inherits the rmult-scaled width of the
+    # surrounding diff_pair / cmirror routing.
+    diffpair_i_ << L_route(
+        pdk,
+        diffpair_i_.ports["source_routeW_con_S"],
+        diffpair_i_.ports["ibias_B_drain_W"],
+    )
+    diffpair_i_ << L_route(
+        pdk,
+        diffpair_i_.ports["source_routeE_con_S"],
+        diffpair_i_.ports["ibias_B_drain_E"],
+    )
 
-    diffpair_i_ref.info['netlist'] = diff_pair_ibias_netlist(center_diffpair_comp, cmirror, antenna_diode_comp)
-    return diffpair_i_ref
+    # Pin labels for the seven top-level nets so klayout/magic LVS can pair
+    # them with the schematic ports. align_comp_to_port's alignment letters
+    # describe which edge of the label rect lines up with the port (e.g.
+    # yalign="b" puts the rect's bottom under the port — i.e. the rect
+    # extends DOWN from a port). For an N-facing port whose metal lies
+    # BELOW the port, we therefore want yalign="b" so the label sits INSIDE
+    # the metal; using the default ("c","t") leaves the label floating
+    # above the metal where it can't pin a net.
+    _orient_to_align = {
+        90:  ("c", "b"),  # N-facing: metal below → label below
+        270: ("c", "t"),  # S-facing: metal above → label above
+        0:   ("l", "c"),  # E-facing: metal west  → label west
+        180: ("r", "c"),  # W-facing: metal east  → label east
+    }
+    _pin_specs = [
+        ("VP",    "br_multiplier_0_gate_S",  "met2"),
+        ("VN",    "bl_multiplier_0_gate_S",  "met2"),
+        ("VDD1",  "tl_multiplier_0_drain_N", "met2"),
+        ("VDD2",  "tr_multiplier_0_drain_N", "met2"),
+        ("IBIAS", "ibias_A_drain_E",         "met3"),
+        # The cmirror's source short is a c_route on top of met3 sd-bars, so
+        # its conducting c-bar is on met4 (cglayer = e1glayer+1 in c_route).
+        ("VSS",   "ibias_purposegndport",    "met4"),
+        ("B",     "tap_N_top_met_S",         "met1"),
+    ]
+    for _text, _portname, _glayer in _pin_specs:
+        _port = diffpair_i_.ports[_portname]
+        _alignment = _orient_to_align[round(_port.orientation) % 360]
+        _label = rectangle(
+            layer=pdk.get_glayer(f"{_glayer}_pin"),
+            size=(0.27, 0.27),
+            centered=True,
+        ).copy()
+        _label.add_label(text=_text, layer=pdk.get_glayer(f"{_glayer}_label"))
+        diffpair_i_.add(align_comp_to_port(_label, _port, alignment=_alignment))
+
+    # Flatten so the pin labels live at this cell's top level. Without
+    # flattening, prec_ref_center would wrap the labels inside a child
+    # reference, and Magic LVS's `subcircuit top on` extraction wouldn't
+    # promote them to top-level pins (klayout LVS does, but Magic doesn't).
+    # The result keeps the same ports + netlist that callers expect.
+    diffpair_i_flat = diffpair_i_.flatten()
+    diffpair_i_flat.info['netlist'] = diff_pair_ibias_netlist(center_diffpair_comp, cmirror, antenna_diode_comp)
+    return diffpair_i_flat
 
