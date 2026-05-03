@@ -51,16 +51,29 @@ jobs:
       - name: Install Python 3.10 (deadsnakes)
         run: |
           set -euxo pipefail
-          # Launchpad PPAs (deadsnakes, mozillateam pre-baked into the image)
-          # intermittently time out from GitHub-hosted runners; retry transient
-          # apt failures rather than failing the whole CI run.
-          retry() { for i in 1 2 3 4 5; do "$@" && return 0; sleep $((i*10)); done; return 1; }
-          retry apt-get update -qq
-          retry apt-get install -y --no-install-recommends \
+          # Launchpad PPAs (deadsnakes + the mozillateam PPA baked into the
+          # image) intermittently time out from GitHub-hosted runners. Naive
+          # retries on apt-get update don't help: apt exits 0 even when an
+          # individual repo fails to fetch (it only emits `W: Failed to fetch`).
+          # So:
+          #   1. Tell apt itself to retry each fetch with a short timeout.
+          #   2. After adding the deadsnakes PPA, poll apt-cache for the target
+          #      package and re-run update until the index actually lands.
+          APT_OPTS='-o Acquire::Retries=10 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30'
+          apt-get $APT_OPTS update -qq || true
+          apt-get $APT_OPTS install -y --no-install-recommends \
             software-properties-common ca-certificates gnupg curl
-          retry add-apt-repository -y ppa:deadsnakes/ppa
-          retry apt-get update -qq
-          retry apt-get install -y --no-install-recommends python3.10 python3.10-venv
+          add-apt-repository -y ppa:deadsnakes/ppa
+          for i in 1 2 3 4 5 6; do
+            apt-get $APT_OPTS update -qq || true
+            if apt-cache show python3.10-venv >/dev/null 2>&1; then
+              break
+            fi
+            echo "deadsnakes index not yet available (attempt $i); retrying..."
+            sleep $((i*15))
+          done
+          apt-cache show python3.10-venv >/dev/null
+          apt-get $APT_OPTS install -y --no-install-recommends python3.10 python3.10-venv
 
       - name: Show tool versions
         run: |
