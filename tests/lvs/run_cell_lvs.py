@@ -154,6 +154,16 @@ def main() -> int:
         help="Comma-separated cell names; default runs every cell with both GDS+netlist.",
     )
     parser.add_argument(
+        "--skip-cells",
+        default="differential_to_single_ended_converter",
+        help=(
+            "Comma-separated cell names to skip when --cells is not specified. "
+            "Default skips differential_to_single_ended_converter (Magic mis-extracts "
+            "its PMOS bulk; the cell can still be tested by passing --cells "
+            "differential_to_single_ended_converter)."
+        ),
+    )
+    parser.add_argument(
         "--jobs", "-j", type=int, default=max(1, (os.cpu_count() or 2) - 1),
         help="Worker processes for parallel LVS (default: cpu_count-1).",
     )
@@ -176,6 +186,12 @@ def main() -> int:
         if missing:
             print(f"warning: cells without inputs: {sorted(missing)}", file=sys.stderr)
         cells = [c for c in cells if c in wanted]
+    elif args.skip_cells:
+        skip = {c.strip() for c in args.skip_cells.split(",") if c.strip()}
+        skipped = [c for c in cells if c in skip]
+        cells = [c for c in cells if c not in skip]
+        for s in skipped:
+            print(f"skipping cell on the --skip-cells list: {s}")
 
     work_items = [
         {

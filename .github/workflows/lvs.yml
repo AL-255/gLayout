@@ -1,4 +1,4 @@
-name: Cell LVS
+name: "Automated: Cell LVS"
 
 # Triggered automatically when the DRC workflow finishes (success OR failure).
 # DRC produces the GDS + reference netlists, so LVS does not have to rebuild
@@ -15,10 +15,18 @@ on:
         description: "GitHub Actions run id of the DRC workflow whose artifacts to consume (defaults to latest successful run)."
         required: false
 
+# Cancel superseded LVS runs on the same source branch. workflow_run-triggered
+# runs report github.ref as the default branch (where this file lives), so we
+# fall back to the triggering DRC run's head_branch when present.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lvs:
     name: LVS (${{ matrix.pdk }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     # Skip when this run was kicked off by a DRC failure — DRC artifacts may
     # still be partial, but we DO want to run LVS on the cells that passed
     # DRC, so allow both success and failure conclusions.
@@ -71,12 +79,25 @@ jobs:
           run-id: ${{ github.event.workflow_run.id || inputs.drc_run_id || github.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Cache uv + CPython 3.10
+        id: cache-uv
+        uses: actions/cache@v4
+        with:
+          path: |
+            /headless/.local/bin/uv
+            /headless/.local/bin/uvx
+            /headless/.local/share/uv
+          key: uv-py310-${{ runner.os }}-v1
+
       - name: Install Python 3.10 (uv)
         run: |
           set -euxo pipefail
           # uv installs CPython from python-build-standalone (GitHub releases),
-          # bypassing launchpad PPAs entirely.
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          # bypassing launchpad PPAs entirely. Skip the curl install when the
+          # cache already restored uv. `uv python install 3.10` is idempotent.
+          if [ ! -x "$HOME/.local/bin/uv" ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           uv python install 3.10
@@ -108,15 +129,9 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/.venv"
           "$PYTHON310" -m venv "$GITHUB_WORKSPACE/.venv"
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
-          python -m pip install --upgrade pip wheel
-          python -m pip install -e .
+          uv pip install -e .
 
-      - name: Refresh editable install (cache hit)
-        if: steps.cache-venv.outputs.cache-hit == 'true'
-        run: |
-          set -euxo pipefail
-          . "$GITHUB_WORKSPACE/.venv/bin/activate"
-          python -m pip install --no-deps -e .
+      # No "refresh editable install" step on cache hit — see drc.yml.
 
       - name: Sanity-check DRC inputs
         run: |
@@ -139,9 +154,10 @@ jobs:
         with:
           name: lvs-${{ matrix.pdk }}
           path: lvs_results/${{ matrix.pdk }}
+          retention-days: 14
 
       - name: Publish JUnit summary
-        if: always()
+        if: ${{ always() && hashFiles(format('lvs_results/{0}/junit.xml', matrix.pdk)) != '' }}
         uses: mikepenz/action-junit-report@v4
         with:
           report_paths: lvs_results/${{ matrix.pdk }}/junit.xml

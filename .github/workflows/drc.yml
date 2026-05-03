@@ -6,10 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Cancel superseded runs on the same branch — pushing N commits in a row
+# shouldn't keep N CI runs going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   drc:
     name: DRC (${{ matrix.pdk }})
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     # iic-osic-tools ships klayout, magic, netgen, and the sky130A / gf180mcuD
     # PDKs pre-installed under /foss/pdks. The image is Ubuntu 24.04 with only
@@ -50,12 +57,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache uv + CPython 3.10
+        id: cache-uv
+        uses: actions/cache@v4
+        with:
+          # iic-osic-tools sets HOME=/headless even when running as root, so
+          # uv installs land here regardless of who launched the container.
+          path: |
+            /headless/.local/bin/uv
+            /headless/.local/bin/uvx
+            /headless/.local/share/uv
+          key: uv-py310-${{ runner.os }}-v1
+
       - name: Install Python 3.10 (uv)
         run: |
           set -euxo pipefail
           # uv installs CPython from python-build-standalone (GitHub releases),
-          # bypassing launchpad PPAs entirely.
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          # bypassing launchpad PPAs entirely. Skip the curl install when the
+          # cache already restored uv. `uv python install 3.10` is idempotent
+          # (no-op if 3.10 is already present in $UV_PYTHON_INSTALL_DIR).
+          if [ ! -x "$HOME/.local/bin/uv" ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           uv python install 3.10
@@ -89,17 +112,13 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/.venv"
           "$PYTHON310" -m venv "$GITHUB_WORKSPACE/.venv"
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
-          python -m pip install --upgrade pip wheel
-          python -m pip install -e .
+          # uv pip install is ~3-5x faster than pip for cold installs and
+          # picks up $VIRTUAL_ENV automatically after `activate`.
+          uv pip install -e .
 
-      - name: Refresh editable install (cache hit)
-        if: steps.cache-venv.outputs.cache-hit == 'true'
-        run: |
-          set -euxo pipefail
-          . "$GITHUB_WORKSPACE/.venv/bin/activate"
-          # Editable install metadata may have stale paths after restore;
-          # re-install without redownloading deps.
-          python -m pip install --no-deps -e .
+      # No "refresh editable install" step on cache hit: glayout's .pth points
+      # to $GITHUB_WORKSPACE which is stable across runs, so the restored venv
+      # imports the freshly checked-out source as-is.
 
       - name: Run cell DRC
         run: |
@@ -115,9 +134,13 @@ jobs:
         with:
           name: drc-${{ matrix.pdk }}
           path: drc_results/${{ matrix.pdk }}
+          retention-days: 14
 
       - name: Publish JUnit summary
-        if: always()
+        # Skip when junit.xml wasn't produced (e.g. setup died before the
+        # runner could write it) — otherwise the publisher emits a misleading
+        # second red check on top of the real failure.
+        if: ${{ always() && hashFiles(format('drc_results/{0}/junit.xml', matrix.pdk)) != '' }}
         uses: mikepenz/action-junit-report@v4
         with:
           report_paths: drc_results/${{ matrix.pdk }}/junit.xml

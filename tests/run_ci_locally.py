@@ -37,26 +37,29 @@ IMAGE = "hpretl/iic-osic-tools:latest"
 
 
 # Bash that boots Python 3.10 + the cached venv inside the container. Mirrors
-# what .github/workflows/{drc,lvs}.yml do.
+# what .github/workflows/{drc,lvs}.yml do: install Python 3.10 via uv (from
+# python-build-standalone, hosted on GitHub releases) instead of via the
+# deadsnakes PPA, which has been flaky.
 BOOTSTRAP = r"""
 set -uo pipefail
 unset PYTHONPATH
 export DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
-apt-get update -qq >/dev/null
-apt-get install -y --no-install-recommends \
-    software-properties-common ca-certificates gnupg curl >/dev/null 2>&1
-add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1
-apt-get update -qq >/dev/null
-apt-get install -y --no-install-recommends python3.10 python3.10-venv >/dev/null 2>&1
+
+if [ ! -x "$HOME/.local/bin/uv" ]; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+fi
+export PATH="$HOME/.local/bin:$PATH"
+uv python install 3.10 >/dev/null 2>&1
+PYTHON310="$(uv python find 3.10)"
 
 if [ ! -x /work/.drc-cache/venv/bin/python ]; then
-    python3.10 -m venv /work/.drc-cache/venv
+    "$PYTHON310" -m venv /work/.drc-cache/venv
     . /work/.drc-cache/venv/bin/activate
-    python -m pip install --upgrade pip wheel >/dev/null
-    python -m pip install -e . >/dev/null
+    uv pip install -e . >/dev/null
 else
+    # Cache hit: glayout's .pth points to /work which is the same on every
+    # run, so no refresh is needed (matches the workflows).
     . /work/.drc-cache/venv/bin/activate
-    python -m pip install --no-deps -e . >/dev/null
 fi
 """
 
