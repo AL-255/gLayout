@@ -51,12 +51,16 @@ jobs:
       - name: Install Python 3.10 (deadsnakes)
         run: |
           set -euxo pipefail
-          apt-get update -qq
-          apt-get install -y --no-install-recommends \
+          # Launchpad PPAs (deadsnakes, mozillateam pre-baked into the image)
+          # intermittently time out from GitHub-hosted runners; retry transient
+          # apt failures rather than failing the whole CI run.
+          retry() { for i in 1 2 3 4 5; do "$@" && return 0; sleep $((i*10)); done; return 1; }
+          retry apt-get update -qq
+          retry apt-get install -y --no-install-recommends \
             software-properties-common ca-certificates gnupg curl
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update -qq
-          apt-get install -y --no-install-recommends python3.10 python3.10-venv
+          retry add-apt-repository -y ppa:deadsnakes/ppa
+          retry apt-get update -qq
+          retry apt-get install -y --no-install-recommends python3.10 python3.10-venv
 
       - name: Show tool versions
         run: |
