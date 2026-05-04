@@ -170,7 +170,7 @@ def opamp_output_stage_netlist(pdk: MappedPDK, output_amp_fet_ref: ComponentRefe
 
     output_stage_netlist.connect_netlist(
         output_amp_fet_ref.info['netlist'],
-        [('D', 'VDD'), ('G', 'VIN'), ('B', 'GND'), ('S', 'VOUT')]
+        [('D', 'VDD'), ('G', 'VIN'), ('B', 'GND'), ('S', 'VOUT'), ('DUM', 'GND')]
     )
 
     output_stage_netlist.connect_netlist(

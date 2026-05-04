@@ -58,9 +58,12 @@ def __connect_cs_netlist(pmos_comps: Component, half_cs_pmos: Component):
         else:
             raise ValueError("No netlist_data found for string netlist in half_cs_pmos component.info")
 
+    # DUM is fet_netlist's 5th port (dummies' tied G/S/D net). Tie it to
+    # VSS — the layout has the half-cs pmos's dummies on its bulk via the
+    # welltie ring, and that's the same net as VSS for this sub-cell.
     pmos_comps.info['netlist'].connect_netlist(
         half_cs_netlist,
-        [('D', 'VOUT'), ('S', 'VSS'), ('B', 'VSS'), ('G', 'VIN2')]
+        [('D', 'VOUT'), ('S', 'VSS'), ('B', 'VSS'), ('G', 'VIN2'), ('DUM', 'VSS')]
     )
 
 def row_csamplifier_diff_to_single_ended_converter(pdk: MappedPDK, diff_to_single_ended_converter: Component, pamp_hparams, rmult) -> Component:

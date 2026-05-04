@@ -87,12 +87,19 @@ def diff_pair_ibias(
 ) -> Component:
     # create and center diffpair
     diffpair_i_ = Component("temp diffpair and current source")
+    # `dum_net='B'` overrides the standalone gf180 diff_pair convention
+    # (which puts dummies on a local floating 'dum' net): inside this
+    # composite, the diff_pair's pwell merges with the surrounding tap
+    # rings so klayout extracts the dummies' G/S/D on bulk (B). sky130
+    # always wants 'B' too — passing it unconditionally is correct on
+    # both PDKs because it matches the magic-merged extraction.
     center_diffpair_comp = diff_pair(
         pdk,
         width=half_diffpair_params[0],
         length=half_diffpair_params[1],
         fingers=half_diffpair_params[2],
         rmult=rmult,
+        dum_net='B',
     )
     # add antenna diodes if that option was specified
     diffpair_centered_ref = prec_ref_center(center_diffpair_comp)
@@ -191,13 +198,23 @@ def diff_pair_ibias(
         viaoffset=None,
     )
     cmirror.add_ports(srcshort.get_ports_list(), prefix="purposegndports")
-    # current mirror netlist
+    # current mirror netlist — gf180 needs `dummies_tied_to_bulk=False`
+    # because here we use raw two_nfet_interdigitized + custom routing,
+    # NOT current_mirror, so the standalone-cell's straight_route from
+    # dummy gsdcon to welltie never gets drawn; klayout extracts the
+    # cmirror dummies on a per-cell floating net. sky130 magic merges
+    # the floating dummies into the bulk so the schematic must keep
+    # them tied to VB or magic counts an extra net.
+    ## HACK: Note that this is a hack for magic LVS, and it's likely incorrect
+    ##       we probably want to fix it properly
+    _dummies_tied = (pdk.name.lower() == "sky130")
     cmirror.info['netlist'] = current_mirror_netlist(
         pdk,
         width=diffpair_bias[0],
         length=diffpair_bias[1],
         fingers=1,
-        multipliers=diffpair_bias[2]
+        multipliers=diffpair_bias[2],
+        dummies_tied_to_bulk=_dummies_tied,
     )
 
     # add cmirror — bump y-offset enough that the LVPWELL paddings of the

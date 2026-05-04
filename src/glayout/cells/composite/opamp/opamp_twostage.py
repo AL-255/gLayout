@@ -258,6 +258,11 @@ def opamp_twostage(
     _csb_f = half_common_source_bias[2]
     _csb_m = half_common_source_bias[3]
     _nfet_model = pdk.models['nfet']
+    # X-prefix at the leaf: sky130's magic+netgen tech setup expects
+    # X-instances of `sky130_fd_pr__nfet_01v8`. klayout decks that classify
+    # primitive MOSFETs by SPICE prefix (e.g. gf180mcu) get their netlist
+    # X→M-rewritten by the LVS runner before extraction — keeps this
+    # generator PDK-agnostic.
     cs_bias_netlist = Netlist(
         circuit_name="CMIRROR",
         nodes=['VREF', 'VOUT', 'VSS', 'B'],

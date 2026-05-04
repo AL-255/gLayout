@@ -24,56 +24,80 @@ from glayout.verification.evaluator_wrapper import run_evaluation
 def add_lvcm_labels(lvcm_in: Component,
                 pdk: MappedPDK
                 ) -> Component:
-	
+
     lvcm_in.unlock()
 
-    met2_pin = (68,16)
-    met2_label = (68,5)
-    met3_pin = (69,16)
-    met3_label = (69,5)
     # list that will contain all port/comp info
     move_info = list()
-    # create labels and append to info list
-    # gnd
-    gndlabel = rectangle(layer=pdk.get_glayer("met2_pin"),size=(0.5,0.5),centered=True).copy()
-    gndlabel.add_label(text="GND",layer=pdk.get_glayer("met2_label"))
-    move_info.append((gndlabel,lvcm_in.ports["M_1_B_tie_N_top_met_N"],None))
-    
-    #currentbias
-    ibias1label = rectangle(layer=pdk.get_glayer("met3_pin"),size=(0.5,0.5),centered=True).copy()
-    ibias1label.add_label(text="IBIAS1",layer=pdk.get_glayer("met3_label"))
-    move_info.append((ibias1label,lvcm_in.ports["M_1_A_drain_bottom_met_N"],None))
-    
-    ibias2label = rectangle(layer=pdk.get_glayer("met3_pin"),size=(0.5,0.5),centered=True).copy()
-    ibias2label.add_label(text="IBIAS2",layer=pdk.get_glayer("met3_label"))
-    move_info.append((ibias2label,lvcm_in.ports["M_2_A_drain_bottom_met_N"],None))
 
-    # output 
-    output1label = rectangle(layer=pdk.get_glayer("met2_pin"),size=(0.27,0.27),centered=True).copy()
-    output1label.add_label(text="IOUT1",layer=pdk.get_glayer("met2_label"))
-    move_info.append((output1label,lvcm_in.ports["M_3_A_multiplier_0_drain_N"],None))
-    
-    output2label = rectangle(layer=pdk.get_glayer("met2_pin"),size=(0.27,0.27),centered=True).copy()
-    output2label.add_label(text="IOUT2",layer=pdk.get_glayer("met2_label"))
-    move_info.append((output2label,lvcm_in.ports["M_4_A_multiplier_0_drain_N"],None))
+    # IBIAS1, IBIAS2 — top-met of the bias-via stacks (glayout met3).
+    ibias1label = rectangle(layer=pdk.get_glayer("met3_pin"), size=(0.5,0.5), centered=True).copy()
+    ibias1label.add_label(text="IBIAS1", layer=pdk.get_glayer("met3_label"))
+    move_info.append((ibias1label, lvcm_in.ports["M_1_A_drain_bottom_met_N"], None))
+
+    ibias2label = rectangle(layer=pdk.get_glayer("met3_pin"), size=(0.5,0.5), centered=True).copy()
+    ibias2label.add_label(text="IBIAS2", layer=pdk.get_glayer("met3_label"))
+    move_info.append((ibias2label, lvcm_in.ports["M_2_A_drain_bottom_met_N"], None))
+
+    # IOUT1, IOUT2 — drain of the output-branch top fets (met2).
+    output1label = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.27,0.27), centered=True).copy()
+    output1label.add_label(text="IOUT1", layer=pdk.get_glayer("met2_label"))
+    move_info.append((output1label, lvcm_in.ports["M_3_A_multiplier_0_drain_N"], None))
+
+    output2label = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.27,0.27), centered=True).copy()
+    output2label.add_label(text="IOUT2", layer=pdk.get_glayer("met2_label"))
+    move_info.append((output2label, lvcm_in.ports["M_4_A_multiplier_0_drain_N"], None))
+
+    # GND — stamp on EVERY welltie ring's metal so klayout's gf180 deck
+    # binds all the per-fet substrate-tap pwells into a single GND net.
+    # Without this, the cascoded bottom fets (fet_1, fet_3) end up with
+    # their source on a per-fet floating net (the unlabeled welltie metal),
+    # and the schematic's `S=GND` mapping doesn't match the layout. Also
+    # GND-stamps the FVF sub-cells' tie rings so their dummies' G/S/D
+    # (which physically merge into the welltie metal via parallel
+    # diffusion contacts) likewise end up named GND.
+    _gnd_tie_ports = [
+        "M_1_A_tie_N_top_met_N",   # bias_fvf input fet welltie
+        "M_1_B_tie_N_top_met_N",   # bias_fvf feedback fet welltie (was the only one before)
+        "M_2_A_tie_N_top_met_N",   # cascode_fvf input fet welltie
+        "M_2_B_tie_N_top_met_N",   # cascode_fvf feedback fet welltie
+        "M_3_A_tie_N_top_met_N",   # out1 top fet welltie
+        "M_3_B_tie_N_top_met_N",   # out1 bot fet welltie
+        "M_4_A_tie_N_top_met_N",   # out2 top fet welltie
+        "M_4_B_tie_N_top_met_N",   # out2 bot fet welltie
+    ]
+    for _portname in _gnd_tie_ports:
+        if _portname not in lvcm_in.ports:
+            continue
+        gndlabel = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.5,0.5), centered=True).copy()
+        gndlabel.add_label(text="GND", layer=pdk.get_glayer("met2_label"))
+        # ('c','c') keeps the label box overlapping the welltie metal
+        # regardless of port orientation.
+        move_info.append((gndlabel, lvcm_in.ports[_portname], ('c','c')))
 
     # move everything to position
     for comp, prt, alignment in move_info:
         alignment = ('c','b') if alignment is None else alignment
         compref = align_comp_to_port(comp, prt, alignment=alignment)
         lvcm_in.add(compref)
-    return lvcm_in.flatten() 
+    return lvcm_in.flatten()
 
 def low_voltage_cmirr_netlist(bias_fvf: Component, cascode_fvf: Component, fet_1_ref: ComponentReference, fet_2_ref: ComponentReference, fet_3_ref: ComponentReference, fet_4_ref: ComponentReference) -> Netlist:
-    
+
         netlist = Netlist(circuit_name='Low_voltage_current_mirror', nodes=['IBIAS1', 'IBIAS2', 'GND', 'IOUT1', 'IOUT2'])
+        # Map the 4 output-branch fets' DUM ports to GND on both PDKs. On
+        # sky130 magic absorbs floating dummies into the bulk anyway. On
+        # gf180 add_lvcm_labels now stamps GND on every fet's welltie
+        # ring (M_3_*, M_4_*), so klayout extracts the dummies' diffusion
+        # nets as GND too — DUM=GND keeps schematic and layout in sync.
+        dum = 'GND'
         # Use netlist_obj for hierarchical netlist building
         netlist.connect_netlist(bias_fvf.info['netlist_obj'], [('VIN','IBIAS1'),('VBULK','GND'),('Ib','IBIAS1'),('VOUT','local_net_1')])
         netlist.connect_netlist(cascode_fvf.info['netlist_obj'], [('VIN','IBIAS1'),('VBULK','GND'),('Ib', 'IBIAS2'),('VOUT','local_net_2')])
-        fet_1A_ref=netlist.connect_netlist(fet_2_ref.info['netlist'], [('D', 'IOUT1'),('G','IBIAS1'),('B','GND')])
-        fet_2A_ref=netlist.connect_netlist(fet_4_ref.info['netlist'], [('D', 'IOUT2'),('G','IBIAS1'),('B','GND')])
-        fet_1B_ref=netlist.connect_netlist(fet_1_ref.info['netlist'], [('G','IBIAS2'),('S', 'GND'),('B','GND')])
-        fet_2B_ref=netlist.connect_netlist(fet_3_ref.info['netlist'], [('G','IBIAS2'),('S', 'GND'),('B','GND')])
+        fet_1A_ref=netlist.connect_netlist(fet_2_ref.info['netlist'], [('D', 'IOUT1'),('G','IBIAS1'),('B','GND'),('DUM', dum)])
+        fet_2A_ref=netlist.connect_netlist(fet_4_ref.info['netlist'], [('D', 'IOUT2'),('G','IBIAS1'),('B','GND'),('DUM', dum)])
+        fet_1B_ref=netlist.connect_netlist(fet_1_ref.info['netlist'], [('G','IBIAS2'),('S', 'GND'),('B','GND'),('DUM', dum)])
+        fet_2B_ref=netlist.connect_netlist(fet_3_ref.info['netlist'], [('G','IBIAS2'),('S', 'GND'),('B','GND'),('DUM', dum)])
         netlist.connect_subnets(
                 fet_1A_ref,
                 fet_1B_ref,
@@ -86,6 +110,8 @@ def low_voltage_cmirr_netlist(bias_fvf: Component, cascode_fvf: Component, fet_1
                 )
 
         return netlist
+
+
    
 @cell
 def  low_voltage_cmirror(
@@ -102,13 +128,26 @@ def  low_voltage_cmirror(
     #top level component
     top_level = Component("Low_voltage_N-type_current_mirror")
 
-    #input branch 2
-    cascode_fvf = flipped_voltage_follower(pdk, width=(width[0],width[0]), length=(length,length), fingers=(fingers[0],fingers[0]), multipliers=(multipliers[0],multipliers[0]), with_dnwell=False)
+    # Suppress sub-cell pin labels for gf180 so the inner FVF VBULK/VIN/Ib/VOUT
+    # labels don't leak into the LVCM GDS (klayout would extract them as extra
+    # top-level pins, breaking LVS).
+    import os as _os
+    _prev_labels = _os.environ.get("GLAYOUT_NO_PIN_LABELS")
+    _os.environ["GLAYOUT_NO_PIN_LABELS"] = "1"
+    try:
+        #input branch 2
+        cascode_fvf = flipped_voltage_follower(pdk, width=(width[0],width[0]), length=(length,length), fingers=(fingers[0],fingers[0]), multipliers=(multipliers[0],multipliers[0]), with_dnwell=False)
+        #input branch 1
+        bias_fvf = flipped_voltage_follower(pdk, width=(width[0],width[1]), length=(length,length), fingers=(fingers[0],fingers[1]), multipliers=(multipliers[0],multipliers[1]), placement="vertical", with_dnwell=False)
+    finally:
+        if _prev_labels is None:
+            _os.environ.pop("GLAYOUT_NO_PIN_LABELS", None)
+        else:
+            _os.environ["GLAYOUT_NO_PIN_LABELS"] = _prev_labels
+
     cascode_fvf_ref = prec_ref_center(cascode_fvf)
     top_level.add(cascode_fvf_ref)
-    
-    #input branch 1
-    bias_fvf = flipped_voltage_follower(pdk, width=(width[0],width[1]), length=(length,length), fingers=(fingers[0],fingers[1]), multipliers=(multipliers[0],multipliers[1]), placement="vertical", with_dnwell=False)
+
     bias_fvf_ref = prec_ref_center(bias_fvf)
     bias_fvf_ref.movey(cascode_fvf_ref.ymin - 2 - (evaluate_bbox(bias_fvf)[1]/2))
     top_level.add(bias_fvf_ref)
@@ -214,7 +253,17 @@ def  low_voltage_cmirror(
     component = component_snap_to_grid(rename_ports_by_orientation(top_level))
     netlist_obj = low_voltage_cmirr_netlist(bias_fvf, cascode_fvf, fet_1_ref, fet_2_ref, fet_3_ref, fet_4_ref)
     component.info['netlist'] = netlist_obj.generate_netlist()
-    
+
+    # gf180 LVS uses klayout's official deck which strictly requires named
+    # pin labels on met*_label layers. sky130 magic+netgen tolerates missing
+    # labels, so we only stamp them for gf180.
+    import os
+    if pdk.name.lower() == "gf180" and not os.environ.get("GLAYOUT_NO_PIN_LABELS"):
+        try:
+            component = add_lvcm_labels(component, pdk)
+        except KeyError:
+            pass
+
     return component
 
 if __name__=="__main__":
