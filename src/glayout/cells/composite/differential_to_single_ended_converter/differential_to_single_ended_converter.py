@@ -162,14 +162,37 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
     return shared_gate_comps
 
 def differential_to_single_ended_converter_netlist(pdk: MappedPDK, half_pload: tuple[float, float, int]) -> Netlist:
+    # Schematic structure matches OpenFASOC reference: PMOS bulks tied to VSS
+    # (no separate `B` top-level port).
+    #
+    # Layout-vs-schematic dummy accounting: the layout has 10 PMOS dummies
+    # that the OpenFASOC reference schematic did not model:
+    #   * 4 outer multipliers (pcompL/pcompR placed top + bottom) with
+    #     ``dummy=True``  -> 2 dummies each = 8 dummies on VSS
+    #   * 2 corner-center multipliers (i=-2 with [True,False] and i=+2 with
+    #     [False,True])    -> 1 dummy each   = 2 dummies on VSS
+    # All ten dummies sit in the n-well at VSS potential; Magic extracts each
+    # as a PMOS with D=G=S=B=VSS. Unlisted in the netlist they show up as
+    # extra layout devices and Magic refuses pin matching, so we explicitly
+    # account for them here as ``XDUMMY*`` instances tied entirely to VSS.
     return Netlist(
         circuit_name="DIFF_TO_SINGLE",
-        nodes=['VIN', 'VOUT', 'VSS', 'VSS2', 'B'],
+        nodes=['VIN', 'VOUT', 'VSS', 'VSS2'],
         source_netlist=""".subckt {circuit_name} {nodes} """ + f'l={half_pload[1]} w={half_pload[0]} mt={4*2} mb={2 * half_pload[2]} ' + """
-XTOP1 V1   VIN VSS  B {model} l={{l}} w={{w}} m={{mt}}
-XTOP2 VSS2 VIN VSS  B {model} l={{l}} w={{w}} m={{mt}}
-XBOT1 VIN  VIN V1   B {model} l={{l}} w={{w}} m={{mb}}
-XBOT2 VOUT VIN VSS2 B {model} l={{l}} w={{w}} m={{mb}}
+XTOP1 V1   VIN VSS  VSS {model} l={{l}} w={{w}} m={{mt}}
+XTOP2 VSS2 VIN VSS  VSS {model} l={{l}} w={{w}} m={{mt}}
+XBOT1 VIN  VIN V1   VSS {model} l={{l}} w={{w}} m={{mb}}
+XBOT2 VOUT VIN VSS2 VSS {model} l={{l}} w={{w}} m={{mb}}
+XDUMMY1  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY2  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY3  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY4  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY5  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY6  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY7  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY8  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY9  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY10 VSS VSS VSS VSS {model} l={{l}} w={{w}}
 .ends {circuit_name}""",
         instance_format="X{name} {nodes} {circuit_name} l={length} w={width} mt={mult_top} mb={mult_bot}",
         parameters={
@@ -187,52 +210,13 @@ def differential_to_single_ended_converter(pdk: MappedPDK, rmult: int, half_ploa
     clear_cache()
     pmos_comps = __route_sharedgatecomps(pdk, pmos_comps, via_xlocation, ptop_AB, pbottom_AB, LRplusdopedPorts, LRgatePorts, LRdrainsPorts, LRsourcesPorts, LRdummyports)
 
-    # Pin labels for the four schematic top-level nets (VIN, VOUT, VSS, VSS2).
-    # add_polygon + add_label are called directly on pmos_comps so the labels
-    # land at this cell's top GDS level — Magic LVS's `subcircuit top on`
-    # only promotes labels found at the top cell; labels buried inside
-    # referenced sub-cells become anonymous `Unnamed_<hash>/<label>` nets.
-    _pin_specs = [
-        # VIN = shared gate net (all four PMOS gates are tied through the
-        # route_quad on met2 + the L/R c_routes).
-        ("VIN",  "ptopAB_L_gate_W",                 "met2"),
-        # VSS = source short bus — picked off the via stack's met2 bottom
-        # (the FET-connected source net, not the floating top of the via).
-        ("VSS",  "2L2Rsrcvia_bottom_met_N",         "met2"),
-        # VSS2 = TOP2-drain / BOT2-source cascode node — exposed by
-        # mimcap_connection_ref's c_route on met3.
-        ("VSS2", "mimcap_connection_con_N",         "met3"),
-        # VOUT = BOT2 drain. The minus-via stack carries this net; label
-        # the met2 bottom where the diffpair plugs in below.
-        ("VOUT", "minusvia_bottom_met_N",           "met2"),
-        # B = bulk net (nwell tap of all four PMOS).
-        ("B",    "ptopAB_L_welltap_N_top_met_N",    "met1"),
-    ]
-    _hs = 0.135  # half-side of the 0.27um label rect
-    for _text, _portname, _glayer in _pin_specs:
-        _port = pmos_comps.ports[_portname]
-        _x, _y = float(_port.center[0]), float(_port.center[1])
-        # Shift the label centre from the port-edge into the metal along
-        # the port-orientation normal so it overlaps the underlying polygon.
-        _orient = round(_port.orientation) % 360
-        if _orient == 90:    # N-facing port → metal below
-            _x_c, _y_c = _x, _y - _hs
-        elif _orient == 270: # S-facing → metal above
-            _x_c, _y_c = _x, _y + _hs
-        elif _orient == 0:   # E-facing → metal west
-            _x_c, _y_c = _x - _hs, _y
-        else:                # W-facing → metal east
-            _x_c, _y_c = _x + _hs, _y
-        pmos_comps.add_polygon(
-            [(_x_c - _hs, _y_c - _hs), (_x_c + _hs, _y_c - _hs),
-             (_x_c + _hs, _y_c + _hs), (_x_c - _hs, _y_c + _hs)],
-            layer=pdk.get_glayer(f"{_glayer}_pin"),
-        )
-        pmos_comps.add_label(
-            text=_text,
-            position=(_x_c, _y_c),
-            layer=pdk.get_glayer(f"{_glayer}_label"),
-        )
+    # Intentionally no pin labels: dse is exercised only through opamp at
+    # this point (it is on the LVS skip list because Magic mis-extracts its
+    # PMOS bulks). Adding labels named VSS/VOUT/VIN/VSS2 here would collide
+    # with opamp's top-level labels at the SAME text — e.g. dse_VSS lands on
+    # the gain-stage's VDD net, and dpiibias also emits a "VSS" label on the
+    # real GND, so Magic would (correctly) report "VSS and VDD electrically
+    # shorted" purely as a name collision, not a real short.
 
     pmos_comps.info['netlist'] = differential_to_single_ended_converter_netlist(pdk, half_pload)
 
