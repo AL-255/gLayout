@@ -70,8 +70,11 @@ def __route_bottom_ncomps_except_drain_nbias(pdk: MappedPDK, toplevel_stacked: C
     toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["diffpair_tap_W_top_met_E"], toplevel_stacked.ports["commonsource_cmirror_output_L_tie_E_top_met_W"],width=1,glayer2="met1")
     toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["diffpair_tap_E_top_met_W"], toplevel_stacked.ports["commonsource_cmirror_output_R_tie_W_top_met_E"],width=1,glayer2="met1")
     # common source
-    # route to gnd the sources of cmirror
-    _cref = toplevel_stacked << c_route(pdk, toplevel_stacked.ports["commonsource_cmirror_output_R_multiplier_0_source_con_S"], toplevel_stacked.ports["commonsource_cmirror_output_L_multiplier_0_source_con_S"], extension=abs(gndpin.ports["N"].center[1]-toplevel_stacked.ports["commonsource_cmirror_output_R_multiplier_0_source_con_S"].center[1]),fullbottom=True)
+    # route to gnd the sources of cmirror, also creating the bottom shared power rail.
+    _cref = toplevel_stacked << c_route(pdk, 
+                                        toplevel_stacked.ports["commonsource_cmirror_output_R_multiplier_0_source_con_S"], 
+                                        toplevel_stacked.ports["commonsource_cmirror_output_L_multiplier_0_source_con_S"], 
+                                        extension=abs(gndpin.ports["N"].center[1]-toplevel_stacked.ports["commonsource_cmirror_output_R_multiplier_0_source_con_S"].center[1]),fullbottom=True)
     # gf180-only m2 patch: the cmirror_ref's tap-ring SW/SE corner via on
     # m2 lands ~0.04um below the cmirror_ref source m2 column above it,
     # leaving a sliver gap that trips m2.2a. Stamp an m2 patch at each
@@ -90,8 +93,30 @@ def __route_bottom_ncomps_except_drain_nbias(pdk: MappedPDK, toplevel_stacked: C
             for _sign in (-1, +1):  # L (-) and R (+)
                 _bref = toplevel_stacked << _rect(size=(0.6, 0.4), layer=_m2, centered=True)
                 _bref.movex(_sign * (abs(_de.center[0]) + 0.25)).movey(_bridge_y)
-    toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["commonsource_cmirror_ref_R_multiplier_0_source_E"],_cref.ports["con_E"],glayer2="met3",via2_alignment=('c','c'))
-    toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["commonsource_cmirror_ref_L_multiplier_0_source_W"],_cref.ports["con_W"],glayer2="met3",via2_alignment=('c','c'))
+    # toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["commonsource_cmirror_ref_R_multiplier_0_source_E"],_cref.ports["con_E"],glayer2="met3",via2_alignment=('c','c'))
+    # toplevel_stacked << straight_route(pdk, toplevel_stacked.ports["commonsource_cmirror_ref_L_multiplier_0_source_W"],_cref.ports["con_W"],glayer2="met3",via2_alignment=('c','c'))
+    # _cref only exposes con_W/con_E at the bridge y (≈ ymin); its e1/e2
+    # extension columns are on glayout met3 (sky130 met2 — same layer as
+    # OUT.source_con_S, the c_route's input ports) and pass through the REF
+    # source bars' y, but with no port at that centerline, the straight_
+    # routes above target con_W/con_E and strand a via at the bridge y.
+    # Synthesize a port at (OUT.source_con_S.x, REF.source_W/E.y, layer=met3)
+    # — the column's centerline at the source-bar y — and let straight_route
+    # bridge REF.source (met2) to it (met3) through a via stack. This ties
+    # the REF source bars to _cref's column (which is on GND via OUT) 
+    for _src_port_name, _out_port_name in (
+        ("commonsource_cmirror_ref_L_multiplier_0_source_W",
+         "commonsource_cmirror_output_L_multiplier_0_source_con_S"),
+        ("commonsource_cmirror_ref_R_multiplier_0_source_E",
+         "commonsource_cmirror_output_R_multiplier_0_source_con_S"),
+    ):
+        _src_port = toplevel_stacked.ports[_src_port_name]
+        _out_port = toplevel_stacked.ports[_out_port_name]
+        _bridge_port = _src_port.copy()
+        _bridge_port.center = (_out_port.center[0], _src_port.center[1])
+        _bridge_port.orientation = (round(_src_port.orientation) + 180) % 360 # Rotating the source port to maintain correct alignment of the via stack
+        _bridge_port.layer = _out_port.layer
+        toplevel_stacked << straight_route(pdk, _src_port, _bridge_port, via2_alignment=('c','c'), fullbottom=True)
     # connect cmirror ref drain to cmirror output gate, then short cmirror ref drain and gate
     Ldrainport = toplevel_stacked.ports["commonsource_cmirror_ref_L_multiplier_0_drain_N"]
     Lgateport = toplevel_stacked.ports["commonsource_cmirror_output_L_multiplier_0_gate_S"]
