@@ -149,6 +149,17 @@ def _stage_inputs(workdir: Path, cell: str, gds_src: Path, netlist_src: Path) ->
 def _classify_log(log: str) -> Dict[str, Any]:
     """Map the klayout deck's stdout banner to a netgen-style summary so the
     existing ``_parse_lvs_report`` happily reports pass/fail."""
+    # Surface the most common environment failure modes explicitly so the
+    # report file makes the root cause obvious instead of getting binned as
+    # generic "LVS inconclusive". `docopt` is imported at the top of the
+    # gf180mcu deck's `run_lvs.py`; if it's missing the whole script aborts
+    # before any LVS work happens and the report would otherwise be silent.
+    if "ModuleNotFoundError: No module named 'docopt'" in log:
+        return {"is_pass": False, "conclusion": "missing dep: docopt (pip install docopt in the LVS venv)"}
+    if "ModuleNotFoundError: No module named 'klayout'" in log:
+        return {"is_pass": False, "conclusion": "missing dep: klayout (pip install klayout in the LVS venv)"}
+    if "klayout: command not found" in log or "klayout: not found" in log:
+        return {"is_pass": False, "conclusion": "klayout binary not on PATH"}
     if re.search(r"Congratulations!\s*Netlists\s*match", log) or "INFO : Congratulations" in log:
         return {"is_pass": True, "conclusion": "Netlists match"}
     if re.search(r"ERROR\s*:\s*Netlists\s*don.t\s*match", log) or "Netlists do not match" in log:

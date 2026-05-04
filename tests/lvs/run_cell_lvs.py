@@ -52,6 +52,21 @@ def _parse_lvs_report(text: str) -> Dict[str, Any]:
     }
     if not text:
         return summary
+    # Surface the most common environment failures explicitly so the CI
+    # status doesn't read as the catch-all "LVS inconclusive". The gf180
+    # klayout deck's `run_lvs.py` imports `docopt` and `klayout.db` before
+    # doing any work, and a missing module aborts the whole script —
+    # without these branches the `lvs.rpt` is just a Python traceback and
+    # the runner reports it as "LVS inconclusive (0 mismatches)".
+    if "ModuleNotFoundError: No module named 'docopt'" in text:
+        summary["conclusion"] = "missing dep: docopt"
+        return summary
+    if "ModuleNotFoundError: No module named 'klayout'" in text:
+        summary["conclusion"] = "missing dep: klayout"
+        return summary
+    if "klayout: command not found" in text or "klayout: not found" in text:
+        summary["conclusion"] = "klayout binary not on PATH"
+        return summary
     if "Netlists match" in text or "Circuits match uniquely" in text:
         summary["is_pass"] = True
         summary["conclusion"] = "Netlists match"
