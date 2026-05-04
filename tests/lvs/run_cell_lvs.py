@@ -32,6 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tests" / "drc"))
 from run_cell_drc import _resolve_pdk  # noqa: E402  (reuse PDK resolver)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from klayout_gf180 import run_lvs_klayout_gf180  # noqa: E402
+
 
 def _parse_lvs_report(text: str) -> Dict[str, Any]:
     """Lightweight parse of a netgen LVS report.
@@ -52,7 +55,12 @@ def _parse_lvs_report(text: str) -> Dict[str, Any]:
     if "Netlists match" in text or "Circuits match uniquely" in text:
         summary["is_pass"] = True
         summary["conclusion"] = "Netlists match"
-    elif "Netlists do not match" in text or "Netlist mismatch" in text:
+    elif (
+        "Netlists do not match" in text
+        or "Netlist mismatch" in text
+        # gf180 klayout deck emits this exact phrasing on a failed compare.
+        or "Netlists don't match" in text
+    ):
         summary["conclusion"] = "Netlists do not match"
 
     summary["unmatched_nets"] = sum(1 for _ in re.finditer(r"\(no matching net\)", text))
@@ -97,7 +105,13 @@ def _enumerate_cells(inputs_dir: Path) -> List[str]:
 
 
 def _run_one_lvs(item: dict) -> dict:
-    """Run lvs_netgen for one cell. Designed for ProcessPoolExecutor."""
+    """Run LVS for one cell. Designed for ProcessPoolExecutor.
+
+    sky130 uses magic+netgen (`pdk.lvs_netgen`). gf180 uses the gf180mcu
+    PDK's official klayout LVS deck — magic+netgen mis-extracts the gf180
+    substrate (NMOS bulks merge into VDD via the n-well), so we drive the
+    deck's own run_lvs.py instead. See tests/lvs/klayout_gf180.py.
+    """
     name = item["name"]
     pdk_name = item["pdk"]
     gds_path = item["gds_path"]
@@ -107,13 +121,21 @@ def _run_one_lvs(item: dict) -> dict:
     result: Dict[str, Any] = {"cell": name, "pdk": pdk_name, "status": "skip"}
     try:
         print(f"[LVS]  {name}", flush=True)
-        pdk = _resolve_pdk(pdk_name)
-        ret = pdk.lvs_netgen(
-            layout=str(gds_path),
-            design_name=name,
-            netlist=str(netlist_path),
-            output_file_path=str(rpt_dir),
-        )
+        if pdk_name == "gf180":
+            ret = run_lvs_klayout_gf180(
+                layout=str(gds_path),
+                design_name=name,
+                netlist=str(netlist_path),
+                output_file_path=str(rpt_dir),
+            )
+        else:
+            pdk = _resolve_pdk(pdk_name)
+            ret = pdk.lvs_netgen(
+                layout=str(gds_path),
+                design_name=name,
+                netlist=str(netlist_path),
+                output_file_path=str(rpt_dir),
+            )
     except Exception as exc:
         result.update({"status": "error", "message": f"lvs failed: {exc}", "trace": traceback.format_exc()})
         print(f"[ERROR] {name}: {exc}", flush=True)

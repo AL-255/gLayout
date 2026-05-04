@@ -82,30 +82,35 @@ def add_df_labels(df_in: Component,
 		df_in.add(compref)
 	return df_in.flatten() 
 
-def diff_pair_netlist(fetL: Component, fetR: Component) -> Netlist:
+def diff_pair_netlist(fetL: Component, fetR: Component, pdk: Optional[MappedPDK] = None, dum_net: Optional[str] = None) -> Netlist:
 	diff_pair_netlist = Netlist(circuit_name='DIFF_PAIR', nodes=['VP', 'VN', 'VDD1', 'VDD2', 'VTAIL', 'B'])
 
 	# The physical layout uses an AB/BA common-centroid placement with four
 	# mirrored device references (two copies of the left device and two copies of
 	# the right device). Model that explicitly in the reference netlist so LVS
 	# compares against the same effective device count/width.
-	diff_pair_netlist.connect_netlist(
-		fetL.info['netlist'],
-		[('D', 'VDD1'), ('G', 'VP'), ('S', 'VTAIL'), ('B', 'B')]
-	)
-	diff_pair_netlist.connect_netlist(
-		fetL.info['netlist'],
-		[('D', 'VDD1'), ('G', 'VP'), ('S', 'VTAIL'), ('B', 'B')]
-	)
-	diff_pair_netlist.connect_netlist(
-		fetR.info['netlist'],
-		[('D', 'VDD2'), ('G', 'VN'), ('S', 'VTAIL'), ('B', 'B')]
-	)
-	diff_pair_netlist.connect_netlist(
-		fetR.info['netlist'],
-		[('D', 'VDD2'), ('G', 'VN'), ('S', 'VTAIL'), ('B', 'B')]
-	)
+	#
+	# DUM maps to the dummies' G/S/D net. Standalone:
+	# * gf180 klayout extracts the four dummies' diffusion fingers as one
+	#   shared floating net (the inter-dummy contacts merge them), so we
+	#   map DUM→'dum' (a local subckt-level net).
+	# * sky130 magic+netgen absorbs the floating dummies into the bulk
+	#   during parallel-device merging, so the schematic must put them on B
+	#   directly — leaving DUM as a separate `dum` net there counts an extra
+	#   net on the schematic side and trips the LVS comparison.
+	# `dum_net` lets a composite parent override this when the surrounding
+	# layout context (extra tap rings, shared pwell paths) physically forces
+	# the dummies onto a different net than the standalone-cell extraction.
+	if dum_net is None:
+		dum_net = 'B' if (pdk is not None and pdk.name.lower() == 'sky130') else 'dum'
+	for net, fet in (('VDD1', fetL), ('VDD1', fetL), ('VDD2', fetR), ('VDD2', fetR)):
+		gate = 'VP' if net == 'VDD1' else 'VN'
+		diff_pair_netlist.connect_netlist(
+			fet.info['netlist'],
+			[('D', net), ('G', gate), ('S', 'VTAIL'), ('B', 'B'), ('DUM', dum_net)],
+		)
 	return diff_pair_netlist
+
 
 @cell
 def diff_pair(
@@ -117,7 +122,8 @@ def diff_pair(
 	plus_minus_seperation: float = 0,
 	rmult: int = 1,
 	dummy: Union[bool, tuple[bool, bool]] = True,
-	substrate_tap: bool=True
+	substrate_tap: bool=True,
+	dum_net: Optional[str] = None,
 ) -> Component:
 	"""create a diffpair with 2 transistors placed in two rows with common centroid place. Sources are shorted
 	width = width of the transistors
@@ -242,7 +248,19 @@ def diff_pair(
 
 	component = component_snap_to_grid(rename_ports_by_orientation(diffpair))
 
-	component.info['netlist'] = diff_pair_netlist(fetL, fetR)
+	component.info['netlist'] = diff_pair_netlist(fetL, fetR, pdk=pdk, dum_net=dum_net)
+
+	# gf180 LVS uses klayout's official deck which strictly requires named
+	# pin labels on met*_label layers — without them, klayout extracts the
+	# cell with only an implicit substrate port and LVS fails. sky130 LVS
+	# via magic+netgen tolerates missing labels, so only emit the labels
+	# for gf180. The B (bulk) label needs `substrate_tap=True` since it
+	# anchors on `tap_N_top_met_S`, which only exists when the diffpair's
+	# tap ring is drawn. Composite cells suppress this via GLAYOUT_NO_PIN_LABELS
+	# so inner labels don't leak into the parent cell's GDS.
+	import os
+	if pdk.name.lower() == "gf180" and substrate_tap and not os.environ.get("GLAYOUT_NO_PIN_LABELS"):
+		component = add_df_labels(component, pdk)
 	return component
 
 

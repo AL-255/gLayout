@@ -56,10 +56,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both PDKs run LVS via magic+netgen. (`SetupPDKFiles` in mappedpdk.py
-        # raises NotImplementedError for gf180 only when its LVS files are
-        # passed as None — gf180_mapped.py supplies them all explicitly, so
-        # the gf180 path is fully wired.)
+        # sky130 uses magic+netgen (via `pdk.lvs_netgen`); gf180 uses the
+        # bundled gf180mcu klayout LVS deck — magic+netgen mis-extracts the
+        # gf180 substrate (NMOS bulks merge into VDD via the n-well), so we
+        # drive the PDK's own run_lvs.py instead. The dispatch happens in
+        # tests/lvs/run_cell_lvs.py based on --pdk; both branches use the
+        # same DRC artifact and write the same summary.json/junit.xml shape.
         pdk: [sky130, gf180]
 
     defaults:
@@ -111,6 +113,13 @@ jobs:
           netgen -batch lvs -version 2>&1 | head -3 || true
           "$PYTHON310" --version
           ls "$PDK_ROOT"
+          # gf180 only: surface the resolved klayout LVS deck path so a
+          # PDK install hiccup shows up in the log instead of a cryptic
+          # FileNotFoundError later in the run step.
+          if [ "${{ matrix.pdk }}" = "gf180" ]; then
+            ver=$(cat "$PDK_ROOT/ciel/gf180mcu/current")
+            ls "$PDK_ROOT/ciel/gf180mcu/versions/$ver/gf180mcuD/libs.tech/klayout/tech/lvs/run_lvs.py"
+          fi
 
       - name: Cache python venv
         id: cache-venv

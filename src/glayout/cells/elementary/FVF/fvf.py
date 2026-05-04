@@ -1,3 +1,4 @@
+from typing import Optional
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
 from gdsfactory.cell import cell
@@ -45,17 +46,25 @@ def get_component_netlist(component):
 def fvf_netlist(fet_1: Component, fet_2: Component) -> Netlist:
 
          netlist = Netlist(circuit_name='FLIPPED_VOLTAGE_FOLLOWER', nodes=['VIN', 'VBULK', 'VOUT', 'Ib'])
-         
-         # Use helper function to get netlist objects regardless of gdsfactory version
+
+         # Both fets' dummies tie to VBULK:
+         # * sky130 magic absorbs floating dummies into the bulk during
+         #   parallel-device merging, so DUM=VBULK matches the extraction.
+         # * gf180 klayout: add_fvf_labels now stamps VBULK on BOTH fets'
+         #   welltie rings, so the dummies' G/S/D (which physically connect
+         #   to the welltie metal via the inter-finger diffusion contacts)
+         #   end up on the labeled VBULK net.
          fet_1_netlist = get_component_netlist(fet_1)
          fet_2_netlist = get_component_netlist(fet_2)
-         netlist.connect_netlist(fet_1_netlist, [('D', 'Ib'), ('G', 'VIN'), ('S', 'VOUT'), ('B', 'VBULK')])
-         netlist.connect_netlist(fet_2_netlist, [('D', 'VOUT'), ('G', 'Ib'), ('S', 'VBULK'), ('B', 'VBULK')])
+         netlist.connect_netlist(fet_1_netlist, [('D', 'Ib'), ('G', 'VIN'), ('S', 'VOUT'), ('B', 'VBULK'), ('DUM', 'VBULK')])
+         netlist.connect_netlist(fet_2_netlist, [('D', 'VOUT'), ('G', 'Ib'), ('S', 'VBULK'), ('B', 'VBULK'), ('DUM', 'VBULK')])
 
          return netlist
 
+
+
 def sky130_add_fvf_labels(fvf_in: Component) -> Component:
-    
+
     fvf_in.unlock()
     # define layers`
     met1_pin = (68,16)
@@ -69,28 +78,72 @@ def sky130_add_fvf_labels(fvf_in: Component) -> Component:
     gnd2label = rectangle(layer=met1_pin,size=(0.5,0.5),centered=True).copy()
     gnd2label.add_label(text="VBULK",layer=met1_label)
     move_info.append((gnd2label,fvf_in.ports["B_tie_N_top_met_N"],None))
-    
+
     #currentbias
     ibiaslabel = rectangle(layer=met2_pin,size=(0.5,0.5),centered=True).copy()
     ibiaslabel.add_label(text="Ib",layer=met2_label)
     move_info.append((ibiaslabel,fvf_in.ports["A_drain_bottom_met_N"],None))
-    
+
     # output (3rd stage)
     outputlabel = rectangle(layer=met2_pin,size=(0.5,0.5),centered=True).copy()
     outputlabel.add_label(text="VOUT",layer=met2_label)
     move_info.append((outputlabel,fvf_in.ports["A_source_bottom_met_N"],None))
-    
+
     # input
     inputlabel = rectangle(layer=met1_pin,size=(0.5,0.5),centered=True).copy()
     inputlabel.add_label(text="VIN",layer=met1_label)
     move_info.append((inputlabel,fvf_in.ports["A_multiplier_0_gate_N"], None))
-    
+
     # move everything to position
     for comp, prt, alignment in move_info:
         alignment = ('c','b') if alignment is None else alignment
         compref = align_comp_to_port(comp, prt, alignment=alignment)
         fvf_in.add(compref)
-    return fvf_in.flatten() 
+    return fvf_in.flatten()
+
+
+def add_fvf_labels(fvf_in: Component, pdk: MappedPDK) -> Component:
+    """PDK-aware FVF label adder. Welltie ring & gate sit on glayout met2;
+    drain/source via tops sit on glayout met3 (via_stack(met2,met3))."""
+    fvf_in.unlock()
+    move_info = list()
+
+    # VBULK — stamp on BOTH fets' welltie rings so klayout's gf180 deck
+    # binds both pwells (fet_1 + fet_2) to the same VBULK net. Without
+    # the fet_1-side stamp, the input fet's dummies and other floating
+    # diffusion areas land on a per-cell auto-named net, which breaks the
+    # schematic-vs-layout dummy match (the schematic puts both fets'
+    # dummies on the bulk via the welltie ring's own substrate contact).
+    for _portname in ("A_tie_N_top_met_N", "B_tie_N_top_met_N"):
+        if _portname not in fvf_in.ports:
+            continue
+        vbulklabel = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.5,0.5), centered=True).copy()
+        vbulklabel.add_label(text="VBULK", layer=pdk.get_glayer("met2_label"))
+        # ('c','c') keeps the label inside the welltie metal regardless of
+        # port orientation (south-facing ports + 'b' default would land
+        # the rectangle below the ring with no underlying metal).
+        move_info.append((vbulklabel, fvf_in.ports[_portname], ('c','c')))
+
+    # Ib — drain via top (glayout met3)
+    ibiaslabel = rectangle(layer=pdk.get_glayer("met3_pin"), size=(0.5,0.5), centered=True).copy()
+    ibiaslabel.add_label(text="Ib", layer=pdk.get_glayer("met3_label"))
+    move_info.append((ibiaslabel, fvf_in.ports["A_drain_bottom_met_N"], None))
+
+    # VOUT — source via top (glayout met3)
+    voutlabel = rectangle(layer=pdk.get_glayer("met3_pin"), size=(0.5,0.5), centered=True).copy()
+    voutlabel.add_label(text="VOUT", layer=pdk.get_glayer("met3_label"))
+    move_info.append((voutlabel, fvf_in.ports["A_source_bottom_met_N"], None))
+
+    # VIN — gate (glayout met2)
+    vinlabel = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.5,0.5), centered=True).copy()
+    vinlabel.add_label(text="VIN", layer=pdk.get_glayer("met2_label"))
+    move_info.append((vinlabel, fvf_in.ports["A_multiplier_0_gate_N"], None))
+
+    for comp, prt, alignment in move_info:
+        alignment = ('c','b') if alignment is None else alignment
+        compref = align_comp_to_port(comp, prt, alignment=alignment)
+        fvf_in.add(compref)
+    return fvf_in.flatten()
 
 @cell
 def  flipped_voltage_follower(
@@ -227,7 +280,20 @@ def  flipped_voltage_follower(
         'nodes': netlist_obj.nodes,
         'source_netlist': netlist_obj.source_netlist
     }
-    
+
+    # gf180 LVS uses klayout's official deck which strictly requires named
+    # pin labels on met*_label layers. sky130 magic+netgen tolerates missing
+    # labels, so we only stamp them for gf180. Composite cells (LVCM, opamp)
+    # set GLAYOUT_NO_PIN_LABELS=1 around their sub-cell builds so the inner
+    # FVF labels don't leak into the parent cell's GDS and confuse top-level
+    # pin extraction.
+    import os
+    if pdk.name.lower() == "gf180" and not os.environ.get("GLAYOUT_NO_PIN_LABELS"):
+        try:
+            component = add_fvf_labels(component, pdk)
+        except KeyError:
+            pass
+
     return component
 
 if __name__=="__main__":

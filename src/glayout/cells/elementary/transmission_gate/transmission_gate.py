@@ -141,13 +141,18 @@ def sky130_add_tg_labels(tg_in: Component) -> Component:
 def tg_netlist(nfet: Component, pfet: Component) -> Netlist:
 
          netlist = Netlist(circuit_name='Transmission_Gate', nodes=['VIN', 'VSS', 'VOUT', 'VCC', 'VGP', 'VGN'])
-         # Use helper function to get netlist objects regardless of gdsfactory version
+         # Use helper function to get netlist objects regardless of gdsfactory version.
+         # Each fet's dummies physically tie to the fet's own welltie ring (NMOS
+         # bulk = VSS, PMOS bulk = VCC), so DUM gets mapped to the same bulk net
+         # so the schematic matches the layout extraction.
          nfet_netlist = get_component_netlist(nfet)
          pfet_netlist = get_component_netlist(pfet)
-         netlist.connect_netlist(nfet_netlist, [('D', 'VOUT'), ('G', 'VGN'), ('S', 'VIN'), ('B', 'VSS')])
-         netlist.connect_netlist(pfet_netlist, [('D', 'VOUT'), ('G', 'VGP'), ('S', 'VIN'), ('B', 'VCC')])
+         netlist.connect_netlist(nfet_netlist, [('D', 'VOUT'), ('G', 'VGN'), ('S', 'VIN'), ('B', 'VSS'), ('DUM', 'VSS')])
+         netlist.connect_netlist(pfet_netlist, [('D', 'VOUT'), ('G', 'VGP'), ('S', 'VIN'), ('B', 'VCC'), ('DUM', 'VCC')])
 
          return netlist
+
+
 
 @cell
 def  transmission_gate(
@@ -200,7 +205,7 @@ def  transmission_gate(
             guardring_ref.move(nfet_ref.center).movey(evaluate_bbox(pfet_ref)[1]/2 + pdk.util_max_metal_seperation()/2)
             top_level.add_ports(guardring_ref.get_ports_list(),prefix="tap_")
     
-    component = component_snap_to_grid(rename_ports_by_orientation(top_level)) 
+    component = component_snap_to_grid(rename_ports_by_orientation(top_level))
     # Store netlist as string to avoid gymnasium info dict type restrictions
     # Compatible with both gdsfactory 7.7.0 and 7.16.0+ strict Pydantic validation
     netlist_obj = tg_netlist(nfet, pfet)
@@ -214,6 +219,16 @@ def  transmission_gate(
         'source_netlist': netlist_obj.source_netlist
     }
 
+    # gf180 LVS uses klayout's official deck which strictly requires named
+    # pin labels on met*_label layers. sky130 magic+netgen tolerates missing
+    # labels, so we only stamp them for gf180. Composite cells suppress with
+    # GLAYOUT_NO_PIN_LABELS so inner labels don't leak into the parent's GDS.
+    import os
+    if pdk.name.lower() == "gf180" and not os.environ.get("GLAYOUT_NO_PIN_LABELS"):
+        try:
+            component = add_tg_labels(component, pdk)
+        except KeyError:
+            pass
 
     return component
 if __name__ == "__main__":
