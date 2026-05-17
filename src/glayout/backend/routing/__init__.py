@@ -74,7 +74,7 @@ def _native_route_quad(
     return comp
 
 
-# --- Active exports — REVERTED iter-17 (see component.py for context).
+# Active exports — gdsfactory (pending coordinated Component cutover).
 route_quad = _gf_route_quad
 route_sharp = _gf_route_sharp
 

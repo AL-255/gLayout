@@ -12,7 +12,7 @@ from gdsfactory.port import Port as _GFPort
 # leaking the implementation location.
 from glayout.backend.component import _NativePort
 
-# Active export — REVERTED iter-17 (see component.py header for context).
+# Active export — gdsfactory (pending coordinated Component cutover).
 Port = _GFPort
 
 

@@ -24,7 +24,7 @@ Audited surface used by glayout (do not break without grepping):
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple, Union
 from pathlib import Path
 
 import gdstk
@@ -32,11 +32,14 @@ import gdstk
 from gdsfactory.component import Component as _GFComponent
 from gdsfactory.component import copy as _gf_copy
 
-# --- Active export — REVERTED iter-17: cutover blocked on a surface
-# audit gap. The native classes lack methods like _NativePort.move_copy,
-# Component.movex/_y/_copy, and others reachable from glayout helpers.
-# A complete-surface audit + extension is queued for the next iteration
-# before re-attempting cutover.
+# Active export — gdsfactory.Component re-export pending coordinated
+# cutover. _NativeComponent + _NativePort + _NativeComponentReference
+# are staged below with full surface coverage; activating them requires
+# coordinated flips in component_reference.py, port.py, components/,
+# routing/, and grid.py (because they construct each other) AND
+# resolution of a layer-resolution divergence (see iter-23 GDS diff:
+# native produces 59 polys on layer (1,0) that gdsfactory places on
+# the correct PDK layers — root cause TBD).
 Component = _GFComponent
 copy = _gf_copy
 
@@ -277,6 +280,25 @@ class _NativePort:
     layer: _LayerTuple = (1, 0)
     port_type: str = "optical"
     parent: Optional["_NativeComponent"] = None
+    # gdsfactory compat fields glayout reads but doesn't really construct:
+    cross_section: Any = None
+    shear_angle: Optional[float] = None
+
+    @property
+    def x(self) -> float:
+        return float(self.center[0])
+
+    @x.setter
+    def x(self, value: float) -> None:
+        self.center = (float(value), self.center[1])
+
+    @property
+    def y(self) -> float:
+        return float(self.center[1])
+
+    @y.setter
+    def y(self, value: float) -> None:
+        self.center = (self.center[0], float(value))
 
     def copy(self, name: Optional[str] = None) -> "_NativePort":
         out = replace(self, parent=None)
@@ -724,6 +746,13 @@ class _NativeComponent:
             return float(sum(p.area() for p in self._cell.polygons))
         gl, gd = layer
         return float(sum(p.area() for p in self._cell.polygons if (p.layer, p.datatype) == (gl, gd)))
+
+    # --- lock/unlock — gdsfactory's @cell locks after build to prevent
+    # mutation of cached cells. Our cell decorator handles that semantics
+    # at the cache layer; here we just provide no-op stubs so glayout
+    # code that calls .lock()/.unlock() doesn't AttributeError.
+    def lock(self) -> "_NativeComponent": return self
+    def unlock(self) -> "_NativeComponent": return self
 
     def show(self, *args, **kwargs) -> None:
         """No-op viewer hook. gdsfactory's `show()` pipes to klive; glayout

@@ -10,7 +10,7 @@ from gdsfactory.component_reference import ComponentReference as _GFComponentRef
 
 from glayout.backend.component import _NativeComponentReference
 
-# Active export — REVERTED iter-17 (see component.py header for context).
+# Active export — gdsfactory (pending coordinated Component cutover).
 ComponentReference = _GFComponentReference
 
 

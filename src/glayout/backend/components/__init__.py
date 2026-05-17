@@ -50,22 +50,24 @@ def _native_rectangle(
     x1, y1 = x0 + w, y0 + h
     c.add_polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], layer=layer)
     if port_type:
-        # Match gdsfactory.components.compass port naming convention:
-        #   e1=west, e2=north, e3=east, e4=south (when all 4 orientations)
+        # Match gdsfactory.components.compass port naming + orientation:
+        #   e1=west(180), e2=north(90), e3=east(0), e4=south(270 — NOT -90)
         edges = {
             180: ("e1", (x0, (y0 + y1) / 2.0), h),
             90:  ("e2", ((x0 + x1) / 2.0, y1), w),
             0:   ("e3", (x1, (y0 + y1) / 2.0), h),
-            -90: ("e4", ((x0 + x1) / 2.0, y0), w),
-            270: ("e4", ((x0 + x1) / 2.0, y0), w),
+            -90: ("e4", ((x0 + x1) / 2.0, y0), w, 270),  # canonicalize to 270
+            270: ("e4", ((x0 + x1) / 2.0, y0), w, 270),
         }
         for orient in port_orientations or ():
             if orient in edges:
-                name, center, width = edges[orient]
+                entry = edges[orient]
+                name, center, width = entry[0], entry[1], entry[2]
+                canonical_orient = entry[3] if len(entry) > 3 else orient
                 if name not in c.ports:
                     c.add_port(
                         name=name, center=center, width=width,
-                        orientation=orient, layer=layer, port_type=port_type,
+                        orientation=canonical_orient, layer=layer, port_type=port_type,
                     )
     return c
 
@@ -91,7 +93,7 @@ def _native_rectangular_ring(
     return _native_boolean(A=rect_out, B=rect_in, operation="A-B", layer=layer)
 
 
-# --- Active exports — REVERTED iter-17 (see component.py for context).
+# Active exports — gdsfactory (pending coordinated Component cutover).
 text_freetype = _gf_text_freetype
 rectangle = _gf_rectangle
 rectangular_ring = _gf_rectangular_ring

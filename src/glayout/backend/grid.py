@@ -50,7 +50,7 @@ def _native_grid(
     return grid_cell
 
 
-# --- Active export — REVERTED iter-17 (see component.py for context).
+# Active export — gdsfactory (pending coordinated Component cutover).
 grid = _gf_grid
 
 
