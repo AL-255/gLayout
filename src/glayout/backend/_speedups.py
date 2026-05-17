@@ -356,6 +356,20 @@ def _patch_gf_ref_ports(RefCls) -> None:
 
     RefCls.ports = property(fast_ports_get)
 
+    # `ref.get_ports_list()` defers to gdsfactory's select_ports
+    # which always sorts clockwise (2491 calls / opamp at ~70 µs each
+    # → 170 ms of sort work). All glayout callers feed the result into
+    # `add_ports()` which puts them in a dict — order is irrelevant.
+    # Replace with a no-sort list cast when no filter kwargs are passed.
+    def fast_get_ports_list(self, **kwargs):
+        if not kwargs:
+            return list(self.ports.values())
+        # Defer to select_ports for filtered queries.
+        from gdsfactory.port import select_ports
+        return list(select_ports(self.ports, **kwargs).values())
+
+    RefCls.get_ports_list = fast_get_ports_list
+
 
 def _patch_gf_pdk_get_layer(PdkCls) -> None:
     """Install a fast get_layer that fast-paths the dominant tuple case."""
