@@ -23,16 +23,17 @@ from typing import Union
 
 import numpy as np
 
-from gdsfactory.pdk import get_grid_size as _gf_get_grid_size
+from glayout.backend._active import get_grid_size_um as _get_grid_size_um
 
 Scalar = Union[int, float, np.floating]
 
 
 def get_grid_size_um() -> float:
-    """Active grid in microns. Reads from gdsfactory's PDK CONF until
-    `glayout.backend.pdk` owns this state. Default is 0.001 µm (1 nm);
-    sky130's mapped PDK overrides to 0.005 µm (5 nm)."""
-    return float(_gf_get_grid_size())
+    """Active grid in microns. Reads from glayout's active-PDK registry
+    (`glayout.backend._active`), with a gdsfactory fallback if no PDK
+    has been registered. Default is 0.001 µm (1 nm); sky130's mapped
+    PDK overrides to 0.005 µm (5 nm)."""
+    return _get_grid_size_um()
 
 
 def snap_to_grid(

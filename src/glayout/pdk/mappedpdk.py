@@ -316,6 +316,15 @@ class MappedPDK(Pdk):
                 )
         return glayers_obj
 
+    def activate(self) -> None:
+        """Activate this PDK in BOTH gdsfactory's CONF and glayout's
+        backend active-PDK registry. The latter lets backend.snap,
+        backend.cell, and backend.component.write_gds read PDK settings
+        without touching gdsfactory at runtime."""
+        super().activate()
+        from glayout.backend._active import set_active_pdk
+        set_active_pdk(self)
+
     @validate_arguments
     def drc(
         self,

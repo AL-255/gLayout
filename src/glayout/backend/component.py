@@ -890,15 +890,10 @@ class _NativeComponent:
         to 1e-9 here causes OFFGRID violations because polygon coords
         round to a finer grid than the PDK rules expect)."""
         if unit is None or precision is None:
-            try:
-                from gdsfactory.pdk import get_active_pdk
-                gws = get_active_pdk().gds_write_settings
-                if unit is None: unit = gws.unit
-                if precision is None: precision = gws.precision
-            except Exception:
-                pass
-        if unit is None: unit = 1e-6
-        if precision is None: precision = 1e-9
+            from glayout.backend._active import get_gds_write_unit_precision
+            _u, _p = get_gds_write_unit_precision()
+            if unit is None: unit = _u
+            if precision is None: precision = _p
         gdspath = Path(gdspath)
         lib = gdstk.Library(unit=unit, precision=precision)
         lib.add(self._cell, *self._cell.dependencies(True))

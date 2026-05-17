@@ -87,15 +87,9 @@ def _hash_component(component: Any) -> str:
 
 def _get_active_pdk_default_decorator() -> Callable | None:
     """Return the active PDK's `default_decorator` (e.g. sky130_add_npc)
-    or None. Reads from gdsfactory's PDK CONF — see
-    project-cutover-final-state memory for the path to owning this in
-    `glayout.backend.pdk` post-Component-swap."""
-    try:
-        from gdsfactory.pdk import get_active_pdk
-        pdk = get_active_pdk()
-        return getattr(pdk, "default_decorator", None)
-    except Exception:
-        return None
+    or None. Reads from glayout's active-PDK registry."""
+    from glayout.backend._active import get_default_decorator
+    return get_default_decorator()
 
 
 def _native_cell(func: _F) -> _F:
@@ -127,13 +121,6 @@ def _native_cell(func: _F) -> _F:
             if decorated is not None:
                 component = decorated
 
-        # Content-dedup pass.
-        content_key = (func.__qualname__, _hash_component(component))
-        existing = _CONTENT_CACHE.get(content_key)
-        if existing is not None:
-            _ARG_CACHE[arg_key] = existing
-            return existing
-
         try:
             component.name = f"{func.__name__}_{arg_key[1]}"
         except Exception:
@@ -149,7 +136,6 @@ def _native_cell(func: _F) -> _F:
                 pass
 
         _ARG_CACHE[arg_key] = component
-        _CONTENT_CACHE[content_key] = component
         return component
 
     wrapper.__wrapped__ = func  # type: ignore[attr-defined]
