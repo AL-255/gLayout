@@ -252,7 +252,13 @@ def via_array(
     # create array
     viaarray_ref = prec_ref_center(prec_array(viastack, columns=cnum_vias[0], rows=cnum_vias[1], spacing=2*[via_abs_spacing],absolute_spacing=True))
     viaarray.add(viaarray_ref)
-    viaarray.add_ports(viaarray_ref.get_ports_list(),prefix="array_")
+    # Originally: viaarray.add_ports(viaarray_ref.get_ports_list(), prefix="array_")
+    # but a grep across the whole repo finds zero callers of
+    # ports prefixed with "array_" (they appear only in this file).
+    # Each via array would propagate N×M×16 internal via ports up; with
+    # via_array called ~70× per opamp, this was ~10k+ wasted port copies
+    # per build. The bottom_lay_* / top_met_* / row*_col*_* ports added
+    # below are what callers actually use.
     # find the what should be used as full dims
     viadims = evaluate_bbox(viaarray)
     if not size:
