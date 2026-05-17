@@ -514,9 +514,20 @@ def _patch_gf_component_add_ports(CompCls, PortCls) -> None:
     def fast_add_ports(self, ports, prefix="", suffix="", **kwargs):
         if kwargs:
             return _orig(self, ports, prefix=prefix, suffix=suffix, **kwargs)
-        items = ports.values() if isinstance(ports, Mapping) else ports
         self_ports = self.ports
         self_name = self.name
+        if not prefix and not suffix and isinstance(ports, Mapping):
+            # Same-name shallow share path. Glayout never reads
+            # port.parent in user code, so sharing Port objects here
+            # is safe — same trick as fast_flatten.
+            for nm in ports:
+                if nm in self_ports:
+                    raise ValueError(
+                        f"add_port() Port name {nm!r} exists in {self_name!r}"
+                    )
+            self_ports.update(ports)
+            return
+        items = ports.values() if isinstance(ports, Mapping) else ports
         for port in items:
             p = PortCls.__new__(PortCls)
             d = port.__dict__.copy()
