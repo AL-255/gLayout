@@ -134,14 +134,20 @@ def rename_component_ports(custom_comp: Union[Component, ComponentReference], re
             raise ValueError("component may have an invalid ports dict")
         new_name = rename_function(pname, pobj)
         names_to_modify.append((pname,new_name))
-    # modify names
-    for namepair in names_to_modify:
-        if namepair[0] in custom_comp.ports.keys():
-            portobj = custom_comp.ports.pop(namepair[0])
-            portobj.name = namepair[1]
-            custom_comp.ports[namepair[1]] = portobj
-        else:
-            raise KeyError("name "+str(namepair[0])+" not in component ports")
+    # Collision-safe rename: pop every port first into a temp dict, then
+    # populate the cleared ports dict from the temp. Without this, two
+    # ports that swap names (e.g. gate_N ↔ gate_S after a mirror_y
+    # flips their orientations) lose one entry — the second rename pops
+    # the freshly-renamed port and the assignment overwrites the first.
+    popped: dict = {}
+    for old_name, _new in names_to_modify:
+        if old_name not in custom_comp.ports:
+            raise KeyError("name "+str(old_name)+" not in component ports")
+        popped[old_name] = custom_comp.ports.pop(old_name)
+    for old_name, new_name in names_to_modify:
+        portobj = popped[old_name]
+        portobj.name = new_name
+        custom_comp.ports[new_name] = portobj
     # returns modified component/component ref
     return custom_comp
 

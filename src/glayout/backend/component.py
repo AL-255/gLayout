@@ -682,11 +682,17 @@ class _NativeComponent:
     def add(self, element) -> "_NativeComponent":
         """Add a polygon, reference, label, or iterable thereof. Mirrors
         gdsfactory's `Component.add` polymorphism (used by `transformed`
-        and a few places that build refs manually)."""
+        and a few places that build refs manually).
+
+        Component arguments are wrapped in a Reference at (0,0), matching
+        gdsfactory's behavior — `diff_pair_stackedcmirror` passes
+        `diff_pair_ibias(...)` (a Component) directly to add()."""
         self._check_unlocked()
         if isinstance(element, _NativeComponentReference):
             self._cell.add(element._reference)
             self._references.append(element)
+        elif isinstance(element, _NativeComponent):
+            self.add_ref(element)
         elif isinstance(element, (list, tuple)):
             for e in element:
                 self.add(e)
