@@ -234,7 +234,14 @@ class _NativeComponentReference:
     ) -> "_NativeComponentReference":
         """Mirror gdsfactory's signature: if `destination` is None, treat
         `origin` as the destination (relative move); otherwise translate
-        the reference so `origin` lands on `destination`."""
+        the reference so `origin` lands on `destination`.
+
+        Snaps the resulting origin to the active PDK grid to match
+        gdsfactory's implicit snap-on-Port-coord behaviour. Without
+        this, downstream `align_comp_to_port` chains accumulate
+        sub-grid float fuzz that lands the final polygon edges at a
+        different on-grid integer than gdsfactory's snapped coords.
+        """
         if destination is None:
             dx, dy = origin
         else:
@@ -243,7 +250,14 @@ class _NativeComponentReference:
         if axis == "x": dy = 0
         elif axis == "y": dx = 0
         ox, oy = self.origin
-        self.origin = (ox + dx, oy + dy)
+        nx, ny = ox + dx, oy + dy
+        from glayout.backend._active import get_grid_size_um
+        grid_um = get_grid_size_um()
+        if grid_um > 0:
+            grid_nm = grid_um * 1000.0
+            nx = round(nx * 1000.0 / grid_nm) * grid_nm / 1000.0
+            ny = round(ny * 1000.0 / grid_nm) * grid_nm / 1000.0
+        self.origin = (nx, ny)
         return self
 
     def movex(self, dx: float) -> "_NativeComponentReference":

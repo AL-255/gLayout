@@ -561,7 +561,12 @@ def _patch_gf_component_add_ports(CompCls, PortCls) -> None:
         # `via_gen.via_array` propagates 16 internal ports per via
         # under this prefix, but no caller in the repo reads
         # `array_*`-prefixed ports. Skipping saves ~1.8 s on opamp.
-        if prefix == "array_":
+        # Disabled in gdstk mode to keep XOR vs vanilla gdsfactory
+        # clean (some downstream sizing math iterates port sets and
+        # the missing array_ ports cause a 20 nm gate_S placement
+        # drift in nmos/pmos primitives).
+        import os as _os_local
+        if prefix == "array_" and _os_local.environ.get("GLAYOUT_BACKEND", "").strip().lower() != "gdstk":
             return
         if kwargs:
             return _orig(self, ports, prefix=prefix, suffix=suffix, **kwargs)
