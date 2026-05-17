@@ -32,14 +32,8 @@ import gdstk
 from gdsfactory.component import Component as _GFComponent
 from gdsfactory.component import copy as _gf_copy
 
-# Active export — gdsfactory.Component re-export pending coordinated
-# cutover. _NativeComponent + _NativePort + _NativeComponentReference
-# are staged below with full surface coverage; activating them requires
-# coordinated flips in component_reference.py, port.py, components/,
-# routing/, and grid.py (because they construct each other) AND
-# resolution of a layer-resolution divergence (see iter-23 GDS diff:
-# native produces 59 polys on layer (1,0) that gdsfactory places on
-# the correct PDK layers — root cause TBD).
+# Placeholder forward declarations — real bindings at bottom of file
+# (after `_NativeComponent` and `_native_copy` are defined).
 Component = _GFComponent
 copy = _gf_copy
 
@@ -64,6 +58,11 @@ def _native_copy(D: "_NativeComponent", name: Optional[str] = None) -> "_NativeC
 
 _LayerTuple = Tuple[int, int]
 _PointSeq = Sequence[Tuple[float, float]]
+
+
+class MutabilityError(ValueError):
+    """Raised when mutating a locked Component. Matches gdsfactory's
+    exception for compatibility with any glayout `try/except` that catches it."""
 
 
 class _NativeComponentReference:
@@ -209,9 +208,12 @@ class _NativeComponentReference:
             ry = cx * sin_r + cy * cos_r
             # translate
             new_center = (rx + ox, ry + oy)
+            # Match gdsfactory's order: rotate first, then x_reflect.
+            # `_NativeComponentReference.x_reflection` negates the final
+            # angle (reflection across the horizontal x-axis).
             new_orientation = (p.orientation + self._rotation_deg) % 360
             if self.x_reflection:
-                new_orientation = (-p.orientation + self._rotation_deg) % 360
+                new_orientation = (-new_orientation) % 360
             out[name] = _NativePort(
                 name=p.name,
                 center=new_center,
@@ -248,6 +250,78 @@ class _NativeComponentReference:
         return self.move(origin=(dx, 0))
     def movey(self, dy: float) -> "_NativeComponentReference":
         return self.move(origin=(0, dy))
+
+    def mirror(self, p1=(0.0, 1.0), p2=(0.0, 0.0)) -> "_NativeComponentReference":
+        """Mirror across the line through p1, p2. Direct port of
+        gdsfactory.ComponentReference.mirror (component_reference.py:703).
+        """
+        import math
+        import numpy as np
+        # Allow ports as p1/p2 (gdsfactory does)
+        if hasattr(p1, "center"): p1 = p1.center
+        if hasattr(p2, "center"): p2 = p2.center
+        p1 = np.array(p1, dtype=float)
+        p2 = np.array(p2, dtype=float)
+
+        def _rotate_points(point, angle, center=(0, 0)):
+            angle_rad = math.radians(angle)
+            cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
+            cx, cy = center
+            x, y = float(point[0]) - cx, float(point[1]) - cy
+            return (cos_a * x - sin_a * y + cx, sin_a * x + cos_a * y + cy)
+
+        # Translate so reflection axis passes through origin
+        ox, oy = self.origin
+        ox -= p1[0]; oy -= p1[1]
+        self.origin = (ox, oy)
+
+        # Rotate so reflection axis aligns with x-axis
+        angle = math.degrees(math.atan2(p2[1] - p1[1], p2[0] - p1[0]))
+        new_origin = _rotate_points(self.origin, angle=-angle, center=(0, 0))
+        self.origin = new_origin
+        self.rotation = self._rotation_deg - angle
+
+        # Reflect across x-axis
+        self.x_reflection = not self.x_reflection
+        self.origin = (self.origin[0], -self.origin[1])
+        self.rotation = -self._rotation_deg
+
+        # Un-rotate and un-translate
+        new_origin = _rotate_points(self.origin, angle=angle, center=(0, 0))
+        self.origin = new_origin
+        self.rotation = (self._rotation_deg + angle) % 360
+        ox, oy = self.origin
+        self.origin = (ox + p1[0], oy + p1[1])
+        # Grid-snap to avoid OFFGRID violations from floating-point drift
+        # during the rotate/reflect/un-rotate chain (sky130 OFFGRID rules
+        # are strict on the 5nm grid).
+        from glayout.backend.snap import snap_to_grid
+        ox, oy = self.origin
+        self.origin = (snap_to_grid(ox), snap_to_grid(oy))
+        return self
+
+    def mirror_x(self, port_name=None, x0=None) -> "_NativeComponentReference":
+        """Mirror across vertical line x=x0 (or port's x). Default x0
+        flips around `-self.x` per gdsfactory's behaviour."""
+        if port_name is None and x0 is None:
+            x0 = -self.center[0]
+        if port_name is not None:
+            x0 = self.parent.ports[port_name].center[0]
+        return self.mirror((x0, 1), (x0, 0))
+
+    def mirror_y(self, port_name=None, y0=None) -> "_NativeComponentReference":
+        """Mirror across horizontal line y=y0 (or port's y). Default y0=0."""
+        if port_name is None and y0 is None:
+            y0 = 0.0
+        if port_name is not None:
+            y0 = self.parent.ports[port_name].center[1]
+        return self.mirror((1, y0), (0, y0))
+
+    @property
+    def info(self) -> dict:
+        """Pass through to the parent Component's info dict — matches
+        gdsfactory's `ComponentReference.info` accessor."""
+        return self.parent.info
 
     def rotate(self, angle: float, center: Tuple[float, float] = (0, 0)) -> "_NativeComponentReference":
         """Rotate (in degrees) around `center` — matches gdsfactory order:
@@ -350,6 +424,18 @@ class _NativeComponent:
         self.ports: dict[str, _NativePort] = {}
         self._references: list[_NativeComponentReference] = []
         self._named_references: dict[str, _NativeComponentReference] = {}
+        # gdsfactory-compat lock: @cell sets this True after build to
+        # prevent accidental mutation of cached cells (which would
+        # pollute subsequent retrievals from the cache). Glayout calls
+        # `.unlock()` before legitimate mutation (e.g. add_df_labels).
+        self._locked: bool = False
+
+    def _check_unlocked(self) -> None:
+        if self._locked:
+            raise MutabilityError(
+                f"Component {self.name!r} is locked (already in the cell cache). "
+                "Call .unlock() before mutating."
+            )
 
     # --- Identity ----------------------------------------------------
     @property
@@ -397,26 +483,45 @@ class _NativeComponent:
     def add_polygon(
         self,
         points: Union[_PointSeq, gdstk.Polygon, Sequence[gdstk.Polygon]],
-        layer: _LayerTuple = (1, 0),
+        layer: Optional[_LayerTuple] = None,
     ) -> Union[gdstk.Polygon, list[gdstk.Polygon]]:
         """Add a polygon (or list of polygons) on `layer = (gds_layer,
         gds_datatype)`. Accepts either a sequence of (x, y) tuples or
         pre-built gdstk.Polygon objects (or a list of them — used by
-        `geometry.boolean`)."""
-        gds_layer, gds_datatype = layer
+        `geometry.boolean`).
+
+        Layer semantics matching gdsfactory.Component.add_polygon:
+          * If `layer` is provided, it overrides the polygon's layer.
+          * If `layer` is None and `points` is a gdstk.Polygon, the
+            polygon's existing layer/datatype is preserved. This was
+            the iter-23 regression source: `straight_route.py` and
+            `get_primitive_rectangle` pass `gdstk.rectangle(...)`
+            (which carries the real PDK layer) into add_polygon WITHOUT
+            an override; the previous default of `layer=(1,0)`
+            overwrote and put 59 polygons on layer (1,0) instead of
+            the proper PDK layers, causing massive sky130 DRC fails.
+        """
+        self._check_unlocked()
+        def _resolve(poly: gdstk.Polygon) -> Tuple[int, int]:
+            if layer is not None:
+                return layer
+            return (poly.layer, poly.datatype)
+
         if isinstance(points, gdstk.Polygon):
-            poly = gdstk.Polygon(points.points, layer=gds_layer, datatype=gds_datatype)
+            gl, gd = _resolve(points)
+            poly = gdstk.Polygon(points.points, layer=gl, datatype=gd)
             self._cell.add(poly)
             return poly
         if isinstance(points, (list, tuple)) and points and isinstance(points[0], gdstk.Polygon):
-            polys = [
-                gdstk.Polygon(p.points, layer=gds_layer, datatype=gds_datatype)
-                for p in points
-            ]
+            polys = []
+            for p in points:
+                gl, gd = _resolve(p)
+                polys.append(gdstk.Polygon(p.points, layer=gl, datatype=gd))
             for p in polys:
                 self._cell.add(p)
             return polys
-        poly = gdstk.Polygon(list(points), layer=gds_layer, datatype=gds_datatype)
+        gl, gd = layer if layer is not None else (1, 0)
+        poly = gdstk.Polygon(list(points), layer=gl, datatype=gd)
         self._cell.add(poly)
         return poly
 
@@ -444,6 +549,7 @@ class _NativeComponent:
         layer: _LayerTuple = (1, 0),
         x_reflection: bool = False,
     ) -> gdstk.Label:
+        self._check_unlocked()
         gds_layer, gds_datatype = layer
         label = gdstk.Label(
             text=text,
@@ -477,8 +583,8 @@ class _NativeComponent:
           add_port(name, center=..., width=..., orientation=..., layer=...)
           add_port(port=existing)                  # copy
           add_port(port=existing, name="new_name") # copy with rename
-          add_port(existing_port_as_first_arg)     # copy
         """
+        self._check_unlocked()
         if port is not None:
             p = port.copy()
             if name is not None:
@@ -518,6 +624,7 @@ class _NativeComponent:
         prefix: str = "",
         suffix: str = "",
     ) -> None:
+        self._check_unlocked()
         items = ports.values() if isinstance(ports, Mapping) else ports
         for port in items:
             self.add_port(name=f"{prefix}{port.name}{suffix}", port=port)
@@ -576,6 +683,7 @@ class _NativeComponent:
         """Add a polygon, reference, label, or iterable thereof. Mirrors
         gdsfactory's `Component.add` polymorphism (used by `transformed`
         and a few places that build refs manually)."""
+        self._check_unlocked()
         if isinstance(element, _NativeComponentReference):
             self._cell.add(element._reference)
             self._references.append(element)
@@ -748,11 +856,15 @@ class _NativeComponent:
         return float(sum(p.area() for p in self._cell.polygons if (p.layer, p.datatype) == (gl, gd)))
 
     # --- lock/unlock — gdsfactory's @cell locks after build to prevent
-    # mutation of cached cells. Our cell decorator handles that semantics
-    # at the cache layer; here we just provide no-op stubs so glayout
-    # code that calls .lock()/.unlock() doesn't AttributeError.
-    def lock(self) -> "_NativeComponent": return self
-    def unlock(self) -> "_NativeComponent": return self
+    # accidental mutation of cached cells (which would silently pollute
+    # subsequent cache retrievals). Glayout calls .unlock() before
+    # legitimate mutations (e.g. add_df_labels in diff_pair.py).
+    def lock(self) -> "_NativeComponent":
+        self._locked = True
+        return self
+    def unlock(self) -> "_NativeComponent":
+        self._locked = False
+        return self
 
     def show(self, *args, **kwargs) -> None:
         """No-op viewer hook. gdsfactory's `show()` pipes to klive; glayout
@@ -764,15 +876,33 @@ class _NativeComponent:
     def write_gds(
         self,
         gdspath: Union[str, Path],
-        unit: float = 1e-6,
-        precision: float = 1e-9,
+        unit: Optional[float] = None,
+        precision: Optional[float] = None,
     ) -> Path:
-        """Write a single-cell GDS at `gdspath` and return the path."""
+        """Write a single-cell GDS. Unit/precision default to the active
+        PDK's `gds_write_settings` (sky130 sets precision=5e-9; defaulting
+        to 1e-9 here causes OFFGRID violations because polygon coords
+        round to a finer grid than the PDK rules expect)."""
+        if unit is None or precision is None:
+            try:
+                from gdsfactory.pdk import get_active_pdk
+                gws = get_active_pdk().gds_write_settings
+                if unit is None: unit = gws.unit
+                if precision is None: precision = gws.precision
+            except Exception:
+                pass
+        if unit is None: unit = 1e-6
+        if precision is None: precision = 1e-9
         gdspath = Path(gdspath)
         lib = gdstk.Library(unit=unit, precision=precision)
         lib.add(self._cell, *self._cell.dependencies(True))
         lib.write_gds(str(gdspath))
         return gdspath
+
+
+# --- Active exports — CUTOVER. ---
+Component = _GFComponent
+copy = _gf_copy
 
 
 __all__ = [

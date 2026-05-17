@@ -139,6 +139,15 @@ def _native_cell(func: _F) -> _F:
         except Exception:
             pass
 
+        # Lock the component before caching so subsequent retrievals
+        # don't see mutations made by a downstream caller (which would
+        # corrupt the cache for the next caller).
+        if hasattr(component, "lock"):
+            try:
+                component.lock()
+            except Exception:
+                pass
+
         _ARG_CACHE[arg_key] = component
         _CONTENT_CACHE[content_key] = component
         return component
