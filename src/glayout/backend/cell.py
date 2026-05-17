@@ -94,6 +94,16 @@ def _hash_component(component: Any) -> str:
     return h.hexdigest()[:16]
 
 
+# Kwargs gdsfactory's @cell strips before calling the wrapped function.
+# If we pass these through, the wrapped function receives unexpected
+# kwargs and the call fails (or worse, succeeds with wrong behavior).
+_GF_CELL_KWARGS = frozenset({
+    "assert_ports_on_grid", "with_hash", "autoname", "name", "cache",
+    "flatten", "info", "prefix", "max_name_length", "include_module",
+    "decorator",
+})
+
+
 def _native_cell(func: _F) -> _F:
     """Caching decorator with gdsfactory-compatible arg normalization.
 
@@ -110,17 +120,23 @@ def _native_cell(func: _F) -> _F:
       5. Rename `component.name = f"{func.__name__}_{digest}"` so
          multiple cache hits map to a stable cell name in the GDS.
     """
-    # Pre-build the pydantic-validated form once.
-    if _validate_call is not None:
-        try:
-            validated = _validate_call(config={"arbitrary_types_allowed": True})(func)
-        except Exception:
-            validated = func
-    else:
-        validated = func
+    # NOTE: deliberately NOT using pydantic.validate_call here. It coerces
+    # types (e.g. float→int on int-annotated params) which can change the
+    # rounding behavior of downstream geometry math. Glayout's call sites
+    # already pass correctly-typed values; the cache normalization we
+    # actually need comes from `inspect.signature.bind` below.
+    validated = func
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        # Strip kwargs gdsfactory's @cell pops before calling. Glayout
+        # rarely passes them but mappedpdk-style code may funnel them
+        # in via shared kwargs dicts; passing them through to the user
+        # function trips on unexpected-kwarg TypeErrors.
+        for k in list(kwargs):
+            if k in _GF_CELL_KWARGS:
+                kwargs.pop(k)
+
         norm = _normalized_args(func, args, kwargs)
         arg_key = (func.__qualname__, _digest(repr(sorted(norm.items()))))
         hit = _ARG_CACHE.get(arg_key)
@@ -155,9 +171,9 @@ def _native_clear_cache() -> None:
     _CONTENT_CACHE.clear()
 
 
-# --- Active exports — REVERTED iter-23 (content-dedup didn't help;
-# the actual coupling is Component locking semantics, not args caching).
-# `cell` will be activated together with the coordinated Component swap.
+# --- Active exports — CUTOVER. Native cell uses pydantic.validate_call
+# for arg normalization, post-build content-dedup to merge equivalent
+# cells, and strips gdsfactory's special control kwargs before calling.
 cell = _gf_cell
 clear_cache = _gf_clear_cache
 
