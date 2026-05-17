@@ -1,22 +1,25 @@
 """Backend cell decorator + cache.
 
-After iter-22 (which reverted) we learned: an independent `@cell` swap
-fails because gdsfactory's decorator normalizes args with
-`pydantic.validate_call` BEFORE computing the cache key, so equivalent
-calls (e.g. `[None, 3]` vs `(None, 3)`) hit the same cache slot in
-gdsfactory but different slots in a naïve `repr()`-keyed cache, causing
-layout duplication and DRC fails.
+Glayout's `@cell` contract has TWO non-obvious behaviors gdsfactory's
+`@cell` provides that a naïve native replacement must replicate:
 
-Iter-23 (this file) fixes that by:
-  1. Wrapping the user function with `pydantic.validate_call` so args
-     get normalized in the same way gdsfactory does.
-  2. Computing the cache key from the *bound + normalized* args via
-     `inspect.signature(func).bind(...)`, so the digest matches between
-     callers that pass equivalent-but-textually-different args.
-  3. Additionally dedup'ing by content hash after the build, so even if
-     two cache slots have different keys, the resulting Components don't
-     end up as overlapping-but-distinct cells in the layout (this was
-     the actual DRC-trip mechanism observed on `low_voltage_cmirror`).
+  1. **Per-PDK default decorator.** sky130's mapped PDK sets
+     `default_decorator=sky130_add_npc`. gdsfactory's `@cell` runs the
+     active PDK's `default_decorator` against the returned Component
+     before caching. Without this, sky130 cells are missing nitride
+     poly cut (npc) polygons → contact/via spacing fails (iter-22
+     symptom: 74 violations on `low_voltage_cmirror`, exactly the
+     pattern of "contacts without their npc covering").
+
+  2. **Special control kwargs.** gdsfactory's `@cell` pops a known set
+     of kwargs (autoname, cache, name, info, flatten, prefix, etc.)
+     before calling the user function. Without this, glayout code that
+     passes these through shared-kwarg dicts trips on unexpected-kwarg
+     TypeErrors.
+
+This native implementation handles both. Caching is per-(function +
+arg digest) with a post-build content-hash dedup so equivalent calls
+collapse to one underlying Component.
 """
 from __future__ import annotations
 
@@ -25,37 +28,31 @@ import hashlib
 import inspect
 from typing import Any, Callable, TypeVar
 
-import gdstk
-
 from gdsfactory.cell import cell as _gf_cell
 from gdsfactory.cell import clear_cache as _gf_clear_cache
-
-try:
-    from pydantic import validate_call as _validate_call
-except ImportError:  # pragma: no cover
-    _validate_call = None
 
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
-# Native caches. Keyed-cache for arg-based hits, content-cache for
-# dedup'ing two different arg-cache misses that happen to produce
-# identical Components (matches gdsfactory's name-based dedup that
-# `clean_value_name` provides).
+# Native caches.
 _ARG_CACHE: dict[tuple[str, str], Any] = {}
 _CONTENT_CACHE: dict[tuple[str, str], Any] = {}
 
 
+# Kwargs gdsfactory's @cell strips before calling the wrapped function.
+_GF_CELL_KWARGS = frozenset({
+    "assert_ports_on_grid", "with_hash", "autoname", "name", "cache",
+    "flatten", "info", "prefix", "max_name_length", "include_module",
+    "decorator",
+})
+
+
 def _normalized_args(func: Callable, args: tuple, kwargs: dict) -> dict:
-    """Bind args/kwargs against the function signature so positional and
-    keyword forms produce the same dict, then return as a dict of
-    parameter-name → value. Defaults are filled in too, matching
-    gdsfactory's `args_as_kwargs` + default merge."""
+    """Bind args/kwargs against the function signature."""
     sig = inspect.signature(func)
     try:
         bound = sig.bind(*args, **kwargs)
     except TypeError:
-        # Don't raise here — let the actual call surface the error.
         return {"_args": args, "_kwargs": kwargs}
     bound.apply_defaults()
     return dict(bound.arguments)
@@ -66,15 +63,9 @@ def _digest(payload: str) -> str:
 
 
 def _hash_component(component: Any) -> str:
-    """Stable hash of a built Component's geometry. Used to dedup
-    cells that have identical content but reached different arg-cache
-    slots (gdsfactory dedups via cell-name collisions in CACHE; we dedup
-    by content). Includes polygons (layer, datatype, points), labels
-    (text, origin, layer), and reference targets/transforms."""
     h = hashlib.sha1()
     cell = getattr(component, "_cell", None)
     if cell is None:
-        # Fallback: hash the repr — not great but unblocking.
         h.update(repr(component).encode("utf-8", "replace"))
         return h.hexdigest()[:16]
     for p in cell.polygons:
@@ -94,45 +85,28 @@ def _hash_component(component: Any) -> str:
     return h.hexdigest()[:16]
 
 
-# Kwargs gdsfactory's @cell strips before calling the wrapped function.
-# If we pass these through, the wrapped function receives unexpected
-# kwargs and the call fails (or worse, succeeds with wrong behavior).
-_GF_CELL_KWARGS = frozenset({
-    "assert_ports_on_grid", "with_hash", "autoname", "name", "cache",
-    "flatten", "info", "prefix", "max_name_length", "include_module",
-    "decorator",
-})
+def _get_active_pdk_default_decorator() -> Callable | None:
+    """Return the active PDK's `default_decorator` (e.g. sky130_add_npc)
+    or None. Reads from gdsfactory's PDK CONF — see
+    project-cutover-final-state memory for the path to owning this in
+    `glayout.backend.pdk` post-Component-swap."""
+    try:
+        from gdsfactory.pdk import get_active_pdk
+        pdk = get_active_pdk()
+        return getattr(pdk, "default_decorator", None)
+    except Exception:
+        return None
 
 
 def _native_cell(func: _F) -> _F:
-    """Caching decorator with gdsfactory-compatible arg normalization.
-
-    Steps:
-      1. Bind args via `inspect.signature` so positional/keyword forms
-         collapse to the same dict.
-      2. Compute an arg-based cache key. Cache hit → return cached.
-      3. Otherwise wrap the function with `pydantic.validate_call` (if
-         available) so type-annotated args get pydantic-normalized
-         (int→float, list→tuple, etc.) — same as gdsfactory's @cell.
-      4. After build, compute a content-hash and dedup against
-         previously-built components. If a content match exists, reuse
-         the old instance and stash it in the arg-cache too.
-      5. Rename `component.name = f"{func.__name__}_{digest}"` so
-         multiple cache hits map to a stable cell name in the GDS.
-    """
-    # NOTE: deliberately NOT using pydantic.validate_call here. It coerces
-    # types (e.g. float→int on int-annotated params) which can change the
-    # rounding behavior of downstream geometry math. Glayout's call sites
-    # already pass correctly-typed values; the cache normalization we
-    # actually need comes from `inspect.signature.bind` below.
-    validated = func
+    """Caching decorator. Replicates gdsfactory's @cell contract for
+    glayout's needs: special-kwarg stripping, arg-bind normalization,
+    post-build per-PDK `default_decorator` invocation, content-hash
+    dedup, and stable name-renaming."""
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        # Strip kwargs gdsfactory's @cell pops before calling. Glayout
-        # rarely passes them but mappedpdk-style code may funnel them
-        # in via shared kwargs dicts; passing them through to the user
-        # function trips on unexpected-kwarg TypeErrors.
+        decorator_override = kwargs.pop("decorator", None)
         for k in list(kwargs):
             if k in _GF_CELL_KWARGS:
                 kwargs.pop(k)
@@ -143,10 +117,17 @@ def _native_cell(func: _F) -> _F:
         if hit is not None:
             return hit
 
-        component = validated(*args, **kwargs)
+        component = func(*args, **kwargs)
 
-        # Content-dedup pass: if an earlier (different-arg-key) build
-        # produced an identical Component, reuse it.
+        # Apply the active PDK's default_decorator (e.g. sky130_add_npc).
+        # This is what makes contacts get their npc-cover polygons.
+        decorator = decorator_override or _get_active_pdk_default_decorator()
+        if callable(decorator):
+            decorated = decorator(component)
+            if decorated is not None:
+                component = decorated
+
+        # Content-dedup pass.
         content_key = (func.__qualname__, _hash_component(component))
         existing = _CONTENT_CACHE.get(content_key)
         if existing is not None:
@@ -171,11 +152,9 @@ def _native_clear_cache() -> None:
     _CONTENT_CACHE.clear()
 
 
-# --- Active exports — CUTOVER. Native cell uses pydantic.validate_call
-# for arg normalization, post-build content-dedup to merge equivalent
-# cells, and strips gdsfactory's special control kwargs before calling.
-cell = _gf_cell
-clear_cache = _gf_clear_cache
+# --- Active exports — CUTOVER iter-23 (with default_decorator applied).
+cell = _native_cell
+clear_cache = _native_clear_cache
 
 
 __all__ = ["cell", "clear_cache", "_native_cell", "_native_clear_cache"]
