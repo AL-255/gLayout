@@ -537,7 +537,17 @@ class _NativeComponent:
         g = get_grid_size_um()
         if g > 0:
             gnm = g * 1000.0
-            def _snap(v): return round(v * 1000.0 / gnm) * gnm / 1000.0
+            def _snap(v):
+                # Only snap if `v` is within 1-ULP of an on-grid value
+                # (i.e. fix accumulated float fuzz, not real off-grid
+                # values). Otherwise leave it alone so genuine
+                # off-grid placements aren't forced into the wrong
+                # grid bin.
+                raw = v * 1000.0 / gnm
+                nearest = round(raw)
+                if abs(raw - nearest) < 1e-6:  # within 1 ULP of integer
+                    return nearest * gnm / 1000.0
+                return v
             x0, y0, x1, y1 = _snap(x0), _snap(y0), _snap(x1), _snap(y1)
         return np.array([[x0, y0], [x1, y1]])
 
