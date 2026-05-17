@@ -345,7 +345,15 @@ class _NativePort:
     Component is activated (so all Ports flowing through the backend have a
     single type). Surface matches what glayout audits show — `name`,
     `center`, `orientation`, `width`, `layer`, plus `copy(name=...)` /
-    `parent`."""
+    `parent`.
+
+    Mirrors gdsfactory.Port's `__init__` snap_to_grid behavior: `center`
+    is snapped to the active PDK grid in `__post_init__`. Without this
+    snap, downstream code that uses `port.center` for positioning
+    propagates raw float values that may land on a different integer
+    grid unit at GDS write time than gdsfactory would have produced,
+    causing the 5-cell DRC drift the cutover used to fail on.
+    """
 
     name: str
     center: Tuple[float, float]
@@ -357,6 +365,25 @@ class _NativePort:
     # gdsfactory compat fields glayout reads but doesn't really construct:
     cross_section: Any = None
     shear_angle: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # Mirror gdsfactory.Port.__init__: snap center to the active
+        # PDK grid (sky130: 5 nm, gf180/default: 1 nm). Without this,
+        # downstream `evaluate_bbox` / `prec_center` / `align_comp_to_port`
+        # computations chain raw float coords through multiple stages
+        # and may land contacts/metals one grid unit off where
+        # gdsfactory's snapped port flow puts them. The 5-cell DRC
+        # cutover failures (ct.1, m2.2, m4.2) traced to this.
+        from glayout.backend._active import get_grid_size_um
+        grid_um = get_grid_size_um()
+        if grid_um <= 0:
+            return
+        cx, cy = self.center
+        grid_nm = grid_um * 1000.0
+        # Snap via round-to-nearest in nm domain (avoids float fuzz)
+        snx = round(cx * 1000.0 / grid_nm) * grid_nm / 1000.0
+        sny = round(cy * 1000.0 / grid_nm) * grid_nm / 1000.0
+        self.center = (snx, sny)
 
     @property
     def x(self) -> float:
@@ -902,8 +929,18 @@ class _NativeComponent:
 
 
 # --- Active exports — CUTOVER. ---
-Component = _GFComponent
-copy = _gf_copy
+# Pick at import time based on GLAYOUT_BACKEND env var so downstream
+# `from glayout.backend.component import Component` callers get the
+# right class without re-importing. The env var is the ONLY reliable
+# switch because by the time `set_backend()` could fire, glayout's
+# cell modules have usually already imported Component.
+import os as _os
+if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+    Component = _NativeComponent
+    copy = _native_copy
+else:
+    Component = _GFComponent
+    copy = _gf_copy
 
 
 __all__ = [

@@ -123,9 +123,14 @@ def _native_route_sharp(
     return comp
 
 
-# Active exports — gdsfactory (pending coordinated Component cutover).
-route_quad = _gf_route_quad
-route_sharp = _gf_route_sharp
+# Active exports — gdsfactory by default, native in gdstk mode.
+import os as _os
+if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+    route_quad = _native_route_quad
+    route_sharp = _native_route_sharp
+else:
+    route_quad = _gf_route_quad
+    route_sharp = _gf_route_sharp
 
 
 __all__ = ["route_quad", "route_sharp", "_native_route_quad", "_native_route_sharp"]

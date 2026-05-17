@@ -11,7 +11,12 @@ from gdsfactory.component_reference import ComponentReference as _GFComponentRef
 from glayout.backend.component import _NativeComponentReference
 
 # Active export — gdsfactory (pending coordinated Component cutover).
-ComponentReference = _GFComponentReference
+import os as _os
+ComponentReference = (
+    _NativeComponentReference
+    if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk"
+    else _GFComponentReference
+)
 
 
 __all__ = ["ComponentReference", "_NativeComponentReference"]

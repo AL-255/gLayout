@@ -262,3 +262,7 @@ drc_results/
 
 # Local benchmarks — not part of the shipped repo
 /benchmark/
+# Cutover precision-drift workshop (local-only)
+CUTOVER_PROGRESS.md
+benchmark/xor_*.gds
+benchmark/xor_*.json

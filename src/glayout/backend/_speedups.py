@@ -71,11 +71,19 @@ def apply_speedups(pdk) -> None:
 
     # Backend switch: skip all patches in "gdsfactory" mode.
     try:
-        from glayout.backend.config import is_native
+        from glayout.backend.config import is_native, is_gdstk
         if not is_native():
             return
     except Exception:
         pass
+
+    # In "gdstk" mode, swap the active Component/ComponentReference/
+    # Port exports to their staged native gdstk-only implementations.
+    # Done before the monkey-patches below because the patches target
+    # gdsfactory classes; if natives are active, the patches don't
+    # apply (and are harmless).
+    if is_gdstk():
+        _activate_native_classes()
 
     if _applied:
         return
@@ -192,6 +200,40 @@ def apply_speedups(pdk) -> None:
         pass
 
     _applied = True
+
+
+def _activate_native_classes() -> None:
+    """Swap the live `Component`, `ComponentReference`, `Port` exports
+    in `glayout.backend.*` to their staged native (`_Native*`) versions.
+
+    This is the runtime equivalent of editing
+    `glayout/backend/component.py:Component = _NativeComponent` etc.
+    Done in-process so the switch is reversible (re-import not
+    needed) and so test harnesses can toggle.
+
+    Active classes are also propagated to `glayout.backend.typings`
+    and into already-imported modules that captured them at import
+    time (component_reference, component, port).
+    """
+    import glayout.backend.component as _bc
+    import glayout.backend.component_reference as _bcr
+    import glayout.backend.port as _bp
+    import glayout.backend.typings as _bt
+    _bc.Component = _bc._NativeComponent
+    _bc.copy = _bc._native_copy
+    _bcr.ComponentReference = _bc._NativeComponentReference
+    _bp.Port = _bc._NativePort
+    _bt.Component = _bc._NativeComponent
+    _bt.ComponentReference = _bc._NativeComponentReference
+    _bt.Port = _bc._NativePort
+    # Also propagate into the `glayout.backend` package namespace
+    # in case anything imported via the package-level export.
+    import glayout.backend as _bb
+    _bb.Component = _bc._NativeComponent
+    _bb.ComponentReference = _bc._NativeComponentReference
+    _bb.Reference = _bc._NativeComponentReference
+    _bb.Port = _bc._NativePort
+    _bb.copy = _bc._native_copy
 
 
 def _strip_validate_arguments_from_loaded_modules() -> int:

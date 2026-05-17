@@ -224,8 +224,13 @@ def _fast_gf_rectangular_ring(
     return c
 
 
-rectangle = _fast_gf_rectangle
-rectangular_ring = _fast_gf_rectangular_ring
+import os as _os
+if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+    rectangle = _native_rectangle
+    rectangular_ring = _native_rectangular_ring
+else:
+    rectangle = _fast_gf_rectangle
+    rectangular_ring = _fast_gf_rectangular_ring
 
 
 __all__ = [

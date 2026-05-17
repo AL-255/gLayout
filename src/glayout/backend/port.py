@@ -13,7 +13,8 @@ from gdsfactory.port import Port as _GFPort
 from glayout.backend.component import _NativePort
 
 # Active export — gdsfactory (pending coordinated Component cutover).
-Port = _GFPort
+import os as _os
+Port = _NativePort if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk" else _GFPort
 
 
 __all__ = ["Port", "_NativePort"]

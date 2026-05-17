@@ -32,9 +32,9 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-Backend = Literal["native", "gdsfactory"]
+Backend = Literal["native", "gdsfactory", "gdstk"]
 
-_VALID = ("native", "gdsfactory")
+_VALID = ("native", "gdsfactory", "gdstk")
 
 # Tri-state: None = not explicitly set, fall through to env var or default.
 _explicit: str | None = None
@@ -64,8 +64,17 @@ def get_backend() -> Backend:
 
 
 def is_native() -> bool:
-    """Convenience: True when the optimized native backend is active."""
-    return get_backend() == "native"
+    """True when the optimized native (gdsfactory + monkey-patches)
+    backend is active. Both 'native' and 'gdstk' install the speedup
+    patches; only 'gdsfactory' opts out."""
+    return get_backend() in ("native", "gdstk")
 
 
-__all__ = ["set_backend", "get_backend", "is_native", "Backend"]
+def is_gdstk() -> bool:
+    """True when the pure-gdstk backend is selected — the staged
+    native Component / ComponentReference / Port classes replace
+    gdsfactory's at apply_speedups() time."""
+    return get_backend() == "gdstk"
+
+
+__all__ = ["set_backend", "get_backend", "is_native", "is_gdstk", "Backend"]

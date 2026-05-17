@@ -97,9 +97,13 @@ def _drc_command(pdk: str, cells: str | None, image: str) -> list[str]:
         f"--out-dir /work/.drc-cache/reports/{shlex.quote(pdk)}"
         f"{cells_arg}\n"
     )
+    extra = []
+    if os.environ.get("GLAYOUT_BACKEND"):
+        extra += ["-e", f"GLAYOUT_BACKEND={os.environ['GLAYOUT_BACKEND']}"]
     return [
         "docker", "run", "--rm", "--user", "root",
         "--entrypoint", "/bin/bash",
+        *extra,
         "-v", f"{REPO_ROOT}:/work",
         "-w", "/work", image, "-lc", script,
     ]
@@ -116,9 +120,13 @@ def _lvs_command(pdk: str, cells: str | None, image: str) -> list[str]:
         f"--out-dir {out}"
         f"{cells_arg}\n"
     )
+    extra = []
+    if os.environ.get("GLAYOUT_BACKEND"):
+        extra += ["-e", f"GLAYOUT_BACKEND={os.environ['GLAYOUT_BACKEND']}"]
     return [
         "docker", "run", "--rm", "--user", "root",
         "--entrypoint", "/bin/bash",
+        *extra,
         "-v", f"{REPO_ROOT}:/work",
         "-w", "/work", image, "-lc", script,
     ]
