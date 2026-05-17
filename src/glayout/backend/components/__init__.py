@@ -186,8 +186,46 @@ def _fast_gf_rectangle(
     return c
 
 
+def _fast_gf_rectangular_ring(
+    enclosed_size=(4.0, 2.0),
+    width=0.5,
+    layer=(1, 0),
+    centered=False,
+):
+    """Drop-in for gdsfactory.components.rectangular_ring that builds
+    a gdsfactory.Component directly (no @cell wrapper). The shape is
+    an outer rectangle minus an inner rectangle. 60 calls per opamp
+    × ~3 ms each → ~180 ms of pure overhead in the original."""
+    import gdsfactory as _gf
+    import gdstk as _gdstk
+    w, h = enclosed_size
+    if centered:
+        ix0, iy0 = -w / 2.0, -h / 2.0
+    else:
+        ix0, iy0 = 0.0, 0.0
+    ix1, iy1 = ix0 + w, iy0 + h
+    ox0, oy0 = ix0 - width, iy0 - width
+    ox1, oy1 = ix1 + width, iy1 + width
+    # 4 rectangles forming the ring (top, bottom, left, right strips).
+    c = _gf.Component(name="rectangular_ring")
+    layer_t = tuple(layer) if not isinstance(layer, tuple) else layer
+    # Top
+    c.add_polygon(
+        [(ox0, iy1), (ox1, iy1), (ox1, oy1), (ox0, oy1)], layer=layer_t)
+    # Bottom
+    c.add_polygon(
+        [(ox0, oy0), (ox1, oy0), (ox1, iy0), (ox0, iy0)], layer=layer_t)
+    # Left
+    c.add_polygon(
+        [(ox0, iy0), (ix0, iy0), (ix0, iy1), (ox0, iy1)], layer=layer_t)
+    # Right
+    c.add_polygon(
+        [(ix1, iy0), (ox1, iy0), (ox1, iy1), (ix1, iy1)], layer=layer_t)
+    return c
+
+
 rectangle = _fast_gf_rectangle
-rectangular_ring = _gf_rectangular_ring
+rectangular_ring = _fast_gf_rectangular_ring
 
 
 __all__ = [
