@@ -17,7 +17,12 @@ setup(
     package_dir={"": "src"},
     include_package_data=True,
     install_requires=[
-        "gdsfactory>6.0.0,<=7.7.0",
+        # Pin to the gdstk-backed 7.x line. v8 switched the backend to kfactory
+        # (port units become DBU integers instead of um floats, LayerMap is an
+        # IntEnum, cell creation requires an active PDK with its layer system),
+        # which is a substantial architectural rewrite of glayout's PDK layer.
+        # 7.27.2 is the last 7.x release.
+        "gdsfactory>=7.7.0,<8.0.0",
         "numpy>1.21.0,<=1.24.0",
         "pandas>1.3.0,<=2.3.0",
         "matplotlib>3.4.0,<=3.10.0",
