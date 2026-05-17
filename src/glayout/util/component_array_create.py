@@ -29,7 +29,8 @@ def write_component_matrix(components_dir: Union[str,Path,list]="./", xspace: fl
 	write_name = name/path of gds write file
 	"""
 	pdk_nochache = Pdk(name="nocache")
-	pdk_nochache.cell_decorator_settings.cache=False
+	# `cell_decorator_settings.cache` was removed in gdsfactory 7.x post-7.7;
+	# `copy_if_cached=True` (now default) keeps cached components from aliasing.
 	pdk_nochache.activate()
 
 	if isinstance(components_dir, list):

@@ -149,6 +149,8 @@ ihp130_mapped_pdk = MappedPDK(
     valid_bjt_sizes=ip130_valid_bjt_sizes
 )
 
-# Configure GDS write precision and cell decorator cache
+# Configure GDS write precision
 ihp130_mapped_pdk.gds_write_settings.precision = 1e-9 # 1nm precision , Check this setting with PDk documentration later
-ihp130_mapped_pdk.cell_decorator_settings.cache = False
+# `cell_decorator_settings.cache` was removed in gdsfactory 7.x post-7.7; the
+# decorator now copies cached components on retrieval (copy_if_cached=True
+# default), so disabling the cache outright is no longer needed.

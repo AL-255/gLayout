@@ -141,4 +141,6 @@ gf180_mapped_pdk = MappedPDK(
 
 # configure the grid size and other settings
 gf180_mapped_pdk.gds_write_settings.precision = 5*10**-9
-gf180_mapped_pdk.cell_decorator_settings.cache=False
+# `cell_decorator_settings.cache` was removed in gdsfactory 7.x post-7.7; the
+# decorator now copies cached components on retrieval (copy_if_cached=True
+# default), so disabling the cache outright is no longer needed.
