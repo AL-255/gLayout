@@ -390,22 +390,18 @@ class _NativePort:
     shear_angle: Optional[float] = None
 
     def __post_init__(self) -> None:
-        # Mirror gdsfactory.Port.__init__: snap center to the active
-        # PDK grid (sky130: 5 nm, gf180/default: 1 nm). Without this,
-        # downstream `evaluate_bbox` / `prec_center` / `align_comp_to_port`
-        # computations chain raw float coords through multiple stages
-        # and may land contacts/metals one grid unit off where
-        # gdsfactory's snapped port flow puts them. The 5-cell DRC
-        # cutover failures (ct.1, m2.2, m4.2) traced to this.
-        from glayout.backend._active import get_grid_size_um
-        grid_um = get_grid_size_um()
-        if grid_um <= 0:
-            return
+        # Snap center to the gdsfactory-default 1 nm grid (NOT the PDK
+        # 5 nm grid). gdsfactory.Port.__init__ does `snap_to_grid(...,
+        # nm=1)` unconditionally; we mirror that so port-center math
+        # produces the same on-1nm-grid value here as in gf bench
+        # mode. Snapping to a finer 1 nm grid kills only the
+        # sub-nanometer float fuzz that propagates from Decimal-
+        # converted-back-to-float values — it doesn't change any
+        # 5 nm-aligned value that downstream `snap_to_2xgrid` cares
+        # about.
         cx, cy = self.center
-        grid_nm = grid_um * 1000.0
-        # Snap via round-to-nearest in nm domain (avoids float fuzz)
-        snx = round(cx * 1000.0 / grid_nm) * grid_nm / 1000.0
-        sny = round(cy * 1000.0 / grid_nm) * grid_nm / 1000.0
+        snx = round(cx * 1000.0) / 1000.0
+        sny = round(cy * 1000.0) / 1000.0
         self.center = (snx, sny)
 
     @property
@@ -432,10 +428,22 @@ class _NativePort:
 
     def move_copy(self, offset: Tuple[float, float]) -> "_NativePort":
         """Return a copy shifted by `offset` (used by util/comp_utils
-        when generating offset port arrays)."""
+        when generating offset port arrays).
+
+        Bypasses `dataclasses.replace` so `__post_init__`'s 1 nm snap
+        doesn't fire on the moved center — matches gdsfactory's
+        `Port.move_copy` which does NOT snap after the move. The
+        float fuzz that survives a non-snapped move is observable
+        by downstream `pdk.snap_to_2xgrid`'s ROUND_UP decimal-
+        rounding, and matching that behaviour keeps the gdstk-mode
+        GDS byte-identical to gdsfactory mode.
+        """
         cx, cy = self.center
         ox, oy = offset
-        out = replace(self, parent=None, center=(cx + ox, cy + oy))
+        out = type(self).__new__(type(self))
+        out.__dict__.update(self.__dict__)
+        out.center = (cx + ox, cy + oy)
+        out.parent = None
         return out
 
     @classmethod
