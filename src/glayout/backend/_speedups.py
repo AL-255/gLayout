@@ -310,40 +310,66 @@ def _patch_gf_ref_ports(RefCls) -> None:
         # to set `port.reference`. We fold all three into one pass.
         local = self._local_ports
         has_rot = rotation is not None and rotation != 0
-        if has_rot:
-            rad = _radians(rotation)
-            cosv, sinv = _cos(rad), _sin(rad)
-        for nm, src in parent_ports.items():
-            sx, sy = src.center
-            so = src.orientation
-            new_o = so
-            if x_reflection:
-                sy = -sy
-                if so is not None:
-                    new_o = -so
+        # Fast path: identity transform (origin=(0,0), no rotation, no
+        # x_reflection). Common in glayout (refs placed at origin and
+        # then moved, OR refs at multiples of 90° rotation which still
+        # need transform). For pure identity, skip the math.
+        identity = (not has_rot and not x_reflection
+                    and ox == 0 and oy == 0)
+        if identity:
+            # In the identity case, the eager ComponentReference
+            # __init__ already filled local with port._copy() entries
+            # whose center/orientation match src. We only need to set
+            # parent + reference on each. Sets nothing if local is
+            # populated AND each port already has the right parent
+            # (warm-cache case, dirt cheap).
+            for nm, src in parent_ports.items():
+                p = local.get(nm)
+                if p is None:
+                    p = type(src).__new__(type(src))
+                    d = src.__dict__.copy()
+                    d["parent"] = self
+                    d["reference"] = self
+                    p.__dict__ = d
+                    local[nm] = p
+                    continue
+                pd = p.__dict__
+                if pd.get("parent") is self and pd.get("reference") is self:
+                    continue
+                pd["parent"] = self
+                pd["reference"] = self
+        else:
             if has_rot:
-                sx, sy = sx * cosv - sy * sinv, sx * sinv + sy * cosv
+                rad = _radians(rotation)
+                cosv, sinv = _cos(rad), _sin(rad)
+            for nm, src in parent_ports.items():
+                sx, sy = src.center
+                so = src.orientation
+                new_o = so
+                if x_reflection:
+                    sy = -sy
+                    if so is not None:
+                        new_o = -so
+                if has_rot:
+                    sx, sy = sx * cosv - sy * sinv, sx * sinv + sy * cosv
+                    if so is not None:
+                        new_o = (new_o or 0) + rotation
+                sx += ox
+                sy += oy
                 if so is not None:
-                    new_o = (new_o or 0) + rotation
-            sx += ox
-            sy += oy
-            if so is not None:
-                new_o = new_o % 360
+                    new_o = new_o % 360
 
-            p = local.get(nm)
-            if p is None:
-                p = type(src).__new__(type(src))
-                d = src.__dict__.copy()
-                info = d["info"]
-                if info:
-                    d["info"] = dict(info)
-                p.__dict__ = d
-                local[nm] = p
-            pd = p.__dict__
-            pd["center"] = (sx, sy)
-            pd["orientation"] = new_o
-            pd["parent"] = self
-            pd["reference"] = self
+                p = local.get(nm)
+                if p is None:
+                    p = type(src).__new__(type(src))
+                    d = src.__dict__.copy()
+                    p.__dict__ = d
+                    local[nm] = p
+                pd = p.__dict__
+                pd["center"] = (sx, sy)
+                pd["orientation"] = new_o
+                pd["parent"] = self
+                pd["reference"] = self
 
         # Drop stale entries for parent ports that no longer exist.
         if len(local) > n_parent:
