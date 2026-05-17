@@ -434,9 +434,16 @@ def _patch_gf_ref_ports(RefCls) -> None:
     # `add_ports()` which puts them in a dict — order is irrelevant.
     # Replace with a no-sort list cast when no filter kwargs are passed.
     def fast_get_ports_list(self, **kwargs):
+        # gdstk mode: must match gdsfactory's sort exactly so
+        # rename_ports_by_orientation collisions tie-break the same way.
+        import os as _os_local
+        if _os_local.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+            from gdsfactory.port import select_ports, sort_ports_clockwise
+            if kwargs:
+                return list(select_ports(self.ports, **kwargs).values())
+            return list(sort_ports_clockwise(self.ports).values())
         if not kwargs:
             return list(self.ports.values())
-        # Defer to select_ports for filtered queries.
         from gdsfactory.port import select_ports
         return list(select_ports(self.ports, **kwargs).values())
 

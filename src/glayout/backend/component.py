@@ -172,10 +172,19 @@ class _NativeComponentReference:
 
     # --- compatibility helpers --------------------------------------
     def get_ports_list(self, **kwargs) -> list["_NativePort"]:
-        """Return ports as a list (gdsfactory ComponentReference.get_ports_list).
-        kwargs are accepted but ignored (gdsfactory uses them for layer/orientation
-        filtering — glayout never passes any in practice)."""
-        return list(self.ports.values())
+        """Return ports as a list (matches gdsfactory ComponentReference.
+        get_ports_list which calls `select_ports → sort_ports_clockwise`).
+        The clockwise sort matters: downstream `add_ports` chains feed
+        through `rename_ports_by_orientation`, and when two ports
+        rename to the same new name (e.g. two south-orient gate vias
+        both → gate_S), the LAST-inserted wins. Matching gf's sort
+        keeps the same port winning in both backends."""
+        ports = self.ports
+        if kwargs:
+            from gdsfactory.port import select_ports
+            return list(select_ports(ports, **kwargs).values())
+        from gdsfactory.port import sort_ports_clockwise
+        return list(sort_ports_clockwise(ports).values())
 
     # --- polygons via reference (for boolean/extract consumers) -----
     def get_polygons(self, as_array: bool = False) -> list:
@@ -867,8 +876,16 @@ class _NativeComponent:
 
     # --- Compatibility helpers --------------------------------------
     def get_ports_list(self, **kwargs) -> list["_NativePort"]:
-        """Mirrors gdsfactory.Component.get_ports_list — return ports as a list."""
-        return list(self.ports.values())
+        """Mirrors gdsfactory.Component.get_ports_list. Sorts clockwise to
+        match gdsfactory's default `select_ports → sort_ports_clockwise`
+        — necessary for rename_ports_by_orientation collision tie-breaks
+        to match gf."""
+        ports = self.ports
+        if kwargs:
+            from gdsfactory.port import select_ports
+            return list(select_ports(ports, **kwargs).values())
+        from gdsfactory.port import sort_ports_clockwise
+        return list(sort_ports_clockwise(ports).values())
 
     # --- Component-level move/transform passthroughs ---------------
     # Some glayout code calls move/movex/movey/rotate directly on the
