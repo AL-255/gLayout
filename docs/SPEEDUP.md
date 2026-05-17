@@ -14,6 +14,22 @@ Per-cell ratios on sky130 range from **9.2×** (transmission_gate) to **27.4×**
 
 The remaining ~1.8× gap vs the experimental gdstk-rewrite port at `../gLayout-port-gdstk` (0.88 s total) is purely architectural — that port skips `gdsfactory.Component` construction entirely; this port keeps it but optimizes the hot paths.
 
+## Switching back to vanilla gdsfactory
+
+The optimized path is the default, but you can opt out at runtime:
+
+```python
+from glayout.backend import set_backend
+set_backend("gdsfactory")   # do this BEFORE any pdk.activate()
+
+# ...or via env var, no code change:
+#   GLAYOUT_BACKEND=gdsfactory python your_script.py
+```
+
+In `"gdsfactory"` mode, `apply_speedups` becomes a no-op — no monkey-patches, no `@validate_arguments` strip, original gdsfactory hot paths intact. Useful for debugging, measuring baselines, or when you need bit-for-bit gdsfactory semantics. Default is `"native"`.
+
+`get_backend()` returns the active selection; `is_native()` is a convenience boolean.
+
 ## How the speedup is structured
 
 All optimizations live in two layers:

@@ -51,7 +51,12 @@ def _fast_snap_to_grid(x: Any, grid_factor: int = 1) -> Any:
 
 def apply_speedups(pdk) -> None:
     """Monkey-patch hot gdsfactory functions in place. Idempotent — safe
-    to call on every MappedPDK.activate()."""
+    to call on every MappedPDK.activate().
+
+    Honors the `glayout.backend.config` backend setting: when the
+    backend is "gdsfactory" (vanilla mode), this returns immediately
+    without installing any patches. Default backend is "native".
+    """
     global _grid_nm, _grid_um, _applied
 
     # Cache the PDK grid value (gdsfactory's get_grid_size reads it on
@@ -63,6 +68,14 @@ def apply_speedups(pdk) -> None:
     except Exception:
         _grid_nm = 1
         _grid_um = 1e-3
+
+    # Backend switch: skip all patches in "gdsfactory" mode.
+    try:
+        from glayout.backend.config import is_native
+        if not is_native():
+            return
+    except Exception:
+        pass
 
     if _applied:
         return

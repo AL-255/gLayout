@@ -43,6 +43,11 @@ from glayout.backend import cell as _cell_mod   # noqa: F401  (load submodule ea
 from glayout.backend import snap as _snap_mod   # noqa: F401
 from glayout.backend import grid as _grid_mod   # noqa: F401
 
+# Backend selector — pick "native" (default, optimized) or "gdsfactory"
+# (vanilla, no monkey-patches). Set via `set_backend()` or the
+# GLAYOUT_BACKEND env var BEFORE the first MappedPDK.activate().
+from glayout.backend.config import set_backend, get_backend, is_native
+
 # `from gdsfactory import ComponentReference as Reference` is used in
 # util/geometry.py, so expose the short alias too.
 Reference = ComponentReference
@@ -62,4 +67,7 @@ __all__ = [
     "typings",
     "functions",
     "add_padding",
+    "set_backend",
+    "get_backend",
+    "is_native",
 ]
