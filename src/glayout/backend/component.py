@@ -517,15 +517,28 @@ class _NativeComponent:
     # --- Geometry queries -------------------------------------------
     @property
     def bbox(self):
-        """Returns ((xmin, ymin), (xmax, ymax)) as a 2x2 numpy array, matching
-        gdsfactory's convention (which itself wraps gdstk.bounding_box).
+        """Returns ((xmin, ymin), (xmax, ymax)) as a 2x2 numpy array.
 
-        For an empty cell, gdsfactory returns ((0,0),(0,0)); we mirror that."""
+        Snaps each coord to the active PDK grid. Without this snap,
+        accumulated float-fuzz in gdstk's bounding_box can produce a
+        1-ULP-above-on-grid value (e.g. 6.095000000000001 instead of
+        6.095) that propagates through `evaluate_bbox → tap_encloses`
+        in two_nfet_interdigitized and bumps a tapring by one grid
+        unit (5 nm in sky130) — the cmirror's final ymax then differs
+        from gdsfactory's by 5 nm. Snapping here normalises the bbox
+        so any tiny float error gets erased BEFORE it propagates.
+        """
         import numpy as np
         bb = self._cell.bounding_box()
         if bb is None:
             return np.array([[0.0, 0.0], [0.0, 0.0]])
         (x0, y0), (x1, y1) = bb
+        from glayout.backend._active import get_grid_size_um
+        g = get_grid_size_um()
+        if g > 0:
+            gnm = g * 1000.0
+            def _snap(v): return round(v * 1000.0 / gnm) * gnm / 1000.0
+            x0, y0, x1, y1 = _snap(x0), _snap(y0), _snap(x1), _snap(y1)
         return np.array([[x0, y0], [x1, y1]])
 
     @property
@@ -746,18 +759,39 @@ class _NativeComponent:
 
     def add(self, element) -> "_NativeComponent":
         """Add a polygon, reference, label, or iterable thereof. Mirrors
-        gdsfactory's `Component.add` polymorphism (used by `transformed`
-        and a few places that build refs manually).
+        gdsfactory's `Component.add` polymorphism.
 
-        Component arguments are wrapped in a Reference at (0,0), matching
-        gdsfactory's behavior — `diff_pair_stackedcmirror` passes
-        `diff_pair_ibias(...)` (a Component) directly to add()."""
+        gdsfactory's `Component.add(other_component)` actually
+        ITERATES the other component (via __iter__ = polygons + paths
+        + labels + references) and adds each item. This flattens the
+        other component's contents into this one — labels included.
+        Without matching this behaviour, sub-cell pin labels (added
+        by e.g. diff_pair_ibias) stay buried in a reference instead
+        of landing on the parent's top-level cell, and the opamp's
+        `_erase_subcell_pin_labels` finds nothing to erase, leading
+        to duplicate pin labels at the opamp top → LVS mismatch.
+        """
         self._check_unlocked()
         if isinstance(element, _NativeComponentReference):
             self._cell.add(element._reference)
             self._references.append(element)
         elif isinstance(element, _NativeComponent):
-            self.add_ref(element)
+            # Match gdsfactory: iterate the component (polygons,
+            # labels, references) and add each — this flattens its
+            # contents into us, propagating labels to our top cell.
+            import gdstk
+            for poly in element._cell.polygons:
+                self._cell.add(gdstk.Polygon(poly.points, layer=poly.layer, datatype=poly.datatype))
+            for lab in element._cell.labels:
+                self._cell.add(gdstk.Label(
+                    text=lab.text, origin=lab.origin, layer=lab.layer,
+                    texttype=lab.texttype, anchor=getattr(lab, "anchor", "o"),
+                    rotation=getattr(lab, "rotation", 0),
+                    magnification=getattr(lab, "magnification", 1),
+                    x_reflection=getattr(lab, "x_reflection", False),
+                ))
+            for ref in list(element._cell.references):
+                self._cell.add(ref)
         elif isinstance(element, (list, tuple)):
             for e in element:
                 self.add(e)
