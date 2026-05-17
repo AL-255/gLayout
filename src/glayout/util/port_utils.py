@@ -152,31 +152,30 @@ def rename_component_ports(custom_comp: Union[Component, ComponentReference], re
     return custom_comp
 
 
+_EDGE_NAMES = frozenset({"e1", "e2", "e3", "e4"})
+
+
 @validate_arguments
 def rename_ports_by_orientation__call(old_name: str, pobj: Port) -> str:
 	"""internal implementation of port orientation rename"""
-	if not "_" in old_name and not any(old_name==edge for edge in ["e1","e2","e3","e4"]):
+	is_edge = old_name in _EDGE_NAMES
+	if "_" not in old_name and not is_edge:
 		raise ValueError("portname must contain underscore \"_\" " + old_name)
-	# get new suffix (port orientation)
-	new_suffix = None
 	angle = pobj.orientation % 360 if pobj.orientation is not None else 0
 	angle = round(angle)
 	if angle <= 45 or angle >= 315:
 		new_suffix = "E"
-	elif angle <= 135 and angle >= 45:
+	elif angle <= 135:
 		new_suffix = "N"
-	elif angle <= 225 and angle >= 135:
+	elif angle <= 225:
 		new_suffix = "W"
 	else:
 		new_suffix = "S"
-	# handle special case where no underscore and name is e1/2/3/4
-	if any(old_name==edge for edge in ["e1","e2","e3","e4"]):
+	if is_edge:
 		return new_suffix
-	# construct new name
 	old_str_split = old_name.rsplit("_", 1)
 	old_str_split[1] = new_suffix
-	new_name = "_".join(old_str_split)
-	return new_name
+	return "_".join(old_str_split)
 
 @validate_arguments
 def rename_ports_by_orientation(custom_comp: Union[Component, ComponentReference]) -> Union[Component, ComponentReference]:
