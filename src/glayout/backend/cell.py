@@ -47,9 +47,18 @@ _GF_CELL_KWARGS = frozenset({
 })
 
 
+# Cache `inspect.signature(func)` results — same function → same signature.
+# Without this cache, every @cell-decorated call re-parses the function's
+# signature (~7000 calls/cell build, ~30µs each = 200ms wasted per build).
+_SIG_CACHE: dict = {}
+
+
 def _normalized_args(func: Callable, args: tuple, kwargs: dict) -> dict:
-    """Bind args/kwargs against the function signature."""
-    sig = inspect.signature(func)
+    """Bind args/kwargs against the function signature (with sig cache)."""
+    sig = _SIG_CACHE.get(func)
+    if sig is None:
+        sig = inspect.signature(func)
+        _SIG_CACHE[func] = sig
     try:
         bound = sig.bind(*args, **kwargs)
     except TypeError:

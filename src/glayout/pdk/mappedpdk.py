@@ -324,6 +324,9 @@ class MappedPDK(Pdk):
         super().activate()
         from glayout.backend._active import set_active_pdk
         set_active_pdk(self)
+        # Monkey-patch hot gdsfactory functions for ~25% cell-build speedup.
+        from glayout.backend._speedups import apply_speedups
+        apply_speedups(self)
 
     @validate_arguments
     def drc(
