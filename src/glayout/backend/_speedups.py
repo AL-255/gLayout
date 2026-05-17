@@ -93,6 +93,21 @@ def apply_speedups(pdk) -> None:
     except Exception:
         pass
 
+    # Fast `Component.add_port` for the dominant case: 1.6M calls per
+    # opamp build, almost all in the form `add_port(name=str, port=Port)`
+    # (from `add_ports` looping over a reference's ports). The original
+    # does a redundant get_layer() call + a fast_copy() + 4 attribute
+    # resets + a dict membership check. We inline copy+parent-set into
+    # one ~10-attr write and skip get_layer entirely when the layer arg
+    # is the default None. Saves ~3 s of opamp build time.
+    try:
+        import gdsfactory.component as _gfcomp
+        import gdsfactory.port as _gfport
+        _patch_gf_component_add_port(_gfcomp.Component, _gfport.Port)
+        _patch_gf_component_add_ports(_gfcomp.Component, _gfport.Port)
+    except Exception:
+        pass
+
     # Replace gdsfactory.Pdk.get_layer (called 35k+ times per cell build,
     # mostly to validate (int, int) tuple layer specs that just need
     # passthrough). Fast path: type-check first, skip the
@@ -239,30 +254,104 @@ def _memoize_pdk_methods(PdkCls, pdk_instance) -> None:
 
 def _patch_gf_ref_ports(RefCls) -> None:
     """Install a cached `ports` property that invalidates when the ref's
-    transform changes. Also a faster bulk recomputation that avoids
-    going through `port.copy()` for every port."""
-    from numpy import mod as _mod
-
+    transform or the parent's port set changes. Saves the ~600k
+    _transform_port calls (~2 s) per opamp build. Also installs a
+    pure-Python `_transform_port` that skips numpy for the common
+    2D-tuple case."""
+    import math
+    _cos = math.cos
+    _sin = math.sin
+    _radians = math.radians
     orig_ports_get = RefCls.ports.fget
 
-    def _transform_key(self):
-        # Cache key — invalidates on transform change. Spacing tuple is
-        # mutable in gdsfactory but rarely changes; include via id.
-        return (id(self.parent), self.origin[0], self.origin[1],
-                self.rotation, self.x_reflection,
-                len(self.parent.ports))
+    def fast_transform_port(self, point, orientation,
+                            origin=(0, 0), rotation=None, x_reflection=False):
+        if isinstance(point, tuple):
+            px, py = point[0], point[1]
+        else:
+            px, py = float(point[0]), float(point[1])
+        new_orientation = orientation
+        if x_reflection:
+            py = -py
+            new_orientation = None if orientation is None else -orientation
+        if rotation is not None and rotation != 0:
+            rad = _radians(rotation)
+            c, s = _cos(rad), _sin(rad)
+            px, py = px * c - py * s, px * s + py * c
+            if orientation is not None:
+                new_orientation = (new_orientation or 0) + rotation
+        if origin is not None:
+            ox, oy = origin[0], origin[1]
+            px += ox
+            py += oy
+        if orientation is not None:
+            new_orientation = new_orientation % 360
+        return (px, py), new_orientation
+
+    RefCls._transform_port = fast_transform_port
 
     def fast_ports_get(self):
-        key = _transform_key(self)
+        parent = self.parent
+        origin = self.origin
+        ox, oy = origin[0], origin[1]
+        rotation = self.rotation
+        x_reflection = self.x_reflection
+        parent_ports = parent.ports
+        n_parent = len(parent_ports)
+        key = (ox, oy, rotation, x_reflection, n_parent)
         cached = getattr(self, "_glayout_ports_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        # Recompute via original — it does the right thing, just slowly.
-        # We could fully reimplement, but originalcorrectness > speed
-        # for the rare cache-miss case.
-        result = orig_ports_get(self)
-        self._glayout_ports_cache = (key, result)
-        return result
+
+        # Inline transform + sync into self._local_ports. Original
+        # gdsfactory ports getter has a redundant per-iteration dict
+        # lookup, a numpy.mod() call, and a separate post-loop pass
+        # to set `port.reference`. We fold all three into one pass.
+        local = self._local_ports
+        has_rot = rotation is not None and rotation != 0
+        if has_rot:
+            rad = _radians(rotation)
+            cosv, sinv = _cos(rad), _sin(rad)
+        for nm, src in parent_ports.items():
+            sx, sy = src.center
+            so = src.orientation
+            new_o = so
+            if x_reflection:
+                sy = -sy
+                if so is not None:
+                    new_o = -so
+            if has_rot:
+                sx, sy = sx * cosv - sy * sinv, sx * sinv + sy * cosv
+                if so is not None:
+                    new_o = (new_o or 0) + rotation
+            sx += ox
+            sy += oy
+            if so is not None:
+                new_o = new_o % 360
+
+            p = local.get(nm)
+            if p is None:
+                p = type(src).__new__(type(src))
+                d = src.__dict__.copy()
+                info = d["info"]
+                if info:
+                    d["info"] = dict(info)
+                p.__dict__ = d
+                local[nm] = p
+            pd = p.__dict__
+            pd["center"] = (sx, sy)
+            pd["orientation"] = new_o
+            pd["parent"] = self
+            pd["reference"] = self
+
+        # Drop stale entries for parent ports that no longer exist.
+        if len(local) > n_parent:
+            for name in list(local):
+                if name not in parent_ports:
+                    del local[name]
+
+        self._glayout_ports_cache = (key, local)
+        return local
 
     RefCls.ports = property(fast_ports_get)
 
@@ -300,6 +389,120 @@ def _patch_gf_pdk_get_layer(PdkCls) -> None:
     PdkCls.get_layer = fast_get_layer
 
 
+def _patch_gf_component_add_ports(CompCls, PortCls) -> None:
+    """Fast `Component.add_ports(ports, prefix='', suffix='')` that
+    inlines the per-port copy without going through add_port. The
+    original does N add_port frame invocations; this does one tight
+    loop with one __new__ + 10 attribute writes + 1 dict insert per
+    port, avoiding ~3 Python frames per port. With 1.6M port additions
+    per opamp build, saves ~1.5 s."""
+    _orig = CompCls.add_ports
+    from collections.abc import Mapping
+
+    def fast_add_ports(self, ports, prefix="", suffix="", **kwargs):
+        if kwargs:
+            return _orig(self, ports, prefix=prefix, suffix=suffix, **kwargs)
+        items = ports.values() if isinstance(ports, Mapping) else ports
+        self_ports = self.ports
+        self_name = self.name
+        for port in items:
+            p = PortCls.__new__(PortCls)
+            d = port.__dict__.copy()
+            d["parent"] = self
+            info = d["info"]
+            if info:
+                d["info"] = dict(info)
+            if prefix or suffix:
+                d["name"] = f"{prefix}{d['name']}{suffix}"
+            nm = d["name"]
+            if nm in self_ports:
+                raise ValueError(
+                    f"add_port() Port name {nm!r} exists in {self_name!r}"
+                )
+            p.__dict__ = d
+            self_ports[nm] = p
+
+    CompCls.add_ports = fast_add_ports
+
+
+def _patch_gf_component_add_port(CompCls, PortCls) -> None:
+    """Replace `Component.add_port` with a fast path for the case
+    `add_port(name=str, port=Port)` and all other kwargs default.
+
+    `add_ports` calls `add_port(name=name, port=port)` in a loop per
+    reference. With 1.6M such calls per opamp build, even small per-call
+    overhead adds up. Original add_port:
+      1. Calls `get_layer(layer)` even when layer is None
+      2. Calls port.copy() (allocates new Port)
+      3. Sets p.name, p.center, etc. via setters (we patched copy to
+         skip these but the conditional-attr-set chain still runs)
+      4. Sets p.parent = self
+      5. Re-sets p.name (yes, twice)
+      6. Membership-check + dict insert
+
+    Fast path inlines all of this into one Port __new__ + 10 attr
+    writes + 1 dict insert, no get_layer, no method calls. Falls back
+    to the original add_port for the (rare) full-construction case."""
+    _orig = CompCls.add_port
+
+    def fast_add_port(self, name=None, center=None, width=None,
+                      orientation=None, port=None, layer=None,
+                      port_type=None, cross_section=None, shear_angle=None):
+        # Most-common shape: name=str, port=Port, everything else default.
+        if (port is not None
+                and center is None and width is None and orientation is None
+                and layer is None and port_type is None
+                and cross_section is None and shear_angle is None):
+            # Inline copy + parent-set.
+            p = PortCls.__new__(PortCls)
+            p.name = name if name is not None else port.name
+            p.center = port.center
+            p.orientation = port.orientation
+            p.parent = self
+            p.info = dict(port.info) if port.info else {}
+            p.port_type = port.port_type
+            p.cross_section = port.cross_section
+            p.shear_angle = port.shear_angle
+            p.layer = port.layer
+            p.width = port.width
+            if p.name in self.ports:
+                raise ValueError(
+                    f"add_port() Port name {p.name!r} exists in {self.name!r}"
+                )
+            self.ports[p.name] = p
+            return p
+        # name=Port shorthand: equivalent to port=name with no overrides.
+        if (isinstance(name, PortCls) and port is None
+                and center is None and width is None and orientation is None
+                and layer is None and port_type is None
+                and cross_section is None and shear_angle is None):
+            src = name
+            p = PortCls.__new__(PortCls)
+            p.name = src.name
+            p.center = src.center
+            p.orientation = src.orientation
+            p.parent = self
+            p.info = dict(src.info) if src.info else {}
+            p.port_type = src.port_type
+            p.cross_section = src.cross_section
+            p.shear_angle = src.shear_angle
+            p.layer = src.layer
+            p.width = src.width
+            if p.name in self.ports:
+                raise ValueError(
+                    f"add_port() Port name {p.name!r} exists in {self.name!r}"
+                )
+            self.ports[p.name] = p
+            return p
+        # Anything else (full construction, attribute overrides) — defer.
+        return _orig(self, name=name, center=center, width=width,
+                     orientation=orientation, port=port, layer=layer,
+                     port_type=port_type, cross_section=cross_section,
+                     shear_angle=shear_angle)
+
+    CompCls.add_port = fast_add_port
+
+
 def _patch_gf_port_copy(PortCls) -> None:
     """Install a fast `.copy()` on gdsfactory.Port that constructs the
     new instance via the fast __init__ above and avoids the
@@ -307,26 +510,27 @@ def _patch_gf_port_copy(PortCls) -> None:
 
     def fast_copy(self, name=None):
         new = PortCls.__new__(PortCls)
-        new.name = name or self.name
-        # Glayout's primitives produce on-grid origins and use only
-        # 0/90/180/270 rotations, so transformed ports stay on-grid.
-        # Skip the re-snap on copy — the source center is already snapped
-        # via Port.__init__. Saves 2.2M round() calls per opamp build.
-        # The off-grid case earlier (via_array repetition arithmetic) is
-        # snapped at __init__ time, not at copy time — by the time we
-        # get here, the port has been through __init__ once.
-        new.center = self.center
-        new.orientation = self.orientation
-        new.parent = self.parent
-        new.info = dict(self.info) if self.info else {}
-        new.port_type = self.port_type
-        new.cross_section = self.cross_section
-        new.shear_angle = self.shear_angle
-        new.layer = self.layer
-        new.width = self.width
+        # __dict__ bulk-assign via copy() is ~10–15 % faster than
+        # ten setattr's: skips Python's per-attribute slot/descriptor
+        # lookup. Use dict.copy() to preserve any non-canonical attrs
+        # (e.g. `reference` set by ComponentReference.ports getter).
+        # Glayout's primitives keep ports on-grid through 0/90/180/270
+        # transforms, so no re-snap is needed at copy time.
+        d = self.__dict__.copy()
+        if name:
+            d["name"] = name
+        # Info dict needs a fresh copy so callers can mutate without
+        # bleeding into the source port.
+        info = d["info"]
+        if info:
+            d["info"] = dict(info)
+        new.__dict__ = d
         return new
 
     PortCls.copy = fast_copy
+    # `Port._copy` is a phidl-compat shim that just calls .copy();
+    # patch it to call fast_copy directly to skip a Python frame.
+    PortCls._copy = fast_copy
 
 
 def _patch_gf_port_init(PortCls) -> None:
