@@ -126,29 +126,27 @@ def rename_component_ports(custom_comp: Union[Component, ComponentReference], re
     if you want to pass additional args to rename_function, implement a functor
     custom_comp is the components to modify. the modified component is returned
     """
-    names_to_modify = list()
-    # find ports and get new names
-    for pname, pobj in custom_comp.ports.items():
-        # error checking
-        if not pname == pobj.name:
+    ports = custom_comp.ports
+    # First pass: compute renames, gather only the ones that actually change.
+    to_rename = []
+    for pname, pobj in ports.items():
+        if pname != pobj.name:
             raise ValueError("component may have an invalid ports dict")
         new_name = rename_function(pname, pobj)
-        names_to_modify.append((pname,new_name))
-    # Collision-safe rename: pop every port first into a temp dict, then
-    # populate the cleared ports dict from the temp. Without this, two
-    # ports that swap names (e.g. gate_N ↔ gate_S after a mirror_y
-    # flips their orientations) lose one entry — the second rename pops
-    # the freshly-renamed port and the assignment overwrites the first.
-    popped: dict = {}
-    for old_name, _new in names_to_modify:
-        if old_name not in custom_comp.ports:
-            raise KeyError("name "+str(old_name)+" not in component ports")
-        popped[old_name] = custom_comp.ports.pop(old_name)
-    for old_name, new_name in names_to_modify:
+        if new_name != pname:
+            to_rename.append((pname, new_name))
+    if not to_rename:
+        return custom_comp
+    # Collision-safe rename: pop every changing port first into a temp
+    # dict, then populate from the temp. Without this, two ports that
+    # swap names (e.g. gate_N ↔ gate_S after a mirror_y flips their
+    # orientations) lose one entry — the second rename pops the
+    # freshly-renamed port and the assignment overwrites the first.
+    popped = {old: ports.pop(old) for old, _ in to_rename}
+    for old_name, new_name in to_rename:
         portobj = popped[old_name]
         portobj.name = new_name
-        custom_comp.ports[new_name] = portobj
-    # returns modified component/component ref
+        ports[new_name] = portobj
     return custom_comp
 
 
