@@ -119,15 +119,22 @@ def _load_cell_specs(pdk: str, param_csv: Optional[Path]) -> Dict[str, CellSpec]
 
 
 def _resolve_pdk(pdk_name: str):
+    # gdsfactory 7.27 made the `@cell` wrapper call `get_active_pdk()` on
+    # every invocation; if no PDK is active it tries to importlib.import_module
+    # whatever CONF.pdk is set to (defaults to `ihp-sg13g2`, which isn't
+    # installed). Activate the resolved glayout PDK eagerly so downstream
+    # cell builders find it on the first call.
     if pdk_name == "sky130":
         from glayout import sky130
         if sky130 is None:
             raise RuntimeError("sky130 PDK could not be imported")
+        sky130.activate()
         return sky130
     if pdk_name == "gf180":
         from glayout import gf180
         if gf180 is None:
             raise RuntimeError("gf180 PDK could not be imported")
+        gf180.activate()
         return gf180
     raise ValueError(f"Unsupported PDK: {pdk_name}")
 
