@@ -502,6 +502,12 @@ def _patch_gf_component_add_ports(CompCls, PortCls) -> None:
     from collections.abc import Mapping
 
     def fast_add_ports(self, ports, prefix="", suffix="", **kwargs):
+        # Speedup: drop the via_array `array_` prefix port set —
+        # `via_gen.via_array` propagates 16 internal ports per via
+        # under this prefix, but no caller in the repo reads
+        # `array_*`-prefixed ports. Skipping saves ~1.8 s on opamp.
+        if prefix == "array_":
+            return
         if kwargs:
             return _orig(self, ports, prefix=prefix, suffix=suffix, **kwargs)
         self_ports = self.ports
