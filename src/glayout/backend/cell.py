@@ -152,8 +152,20 @@ def _native_cell(func: _F) -> _F:
 
 
 def _native_clear_cache() -> None:
-    _ARG_CACHE.clear()
-    _CONTENT_CACHE.clear()
+    """No-op. Glayout's composite cell builders sprinkle `clear_cache()`
+    calls between build phases, but our @cell uses an arg-digest cache
+    (not name-based like gdsfactory's), so identical (func, args)
+    invocations always return the same cached Component — no name
+    collisions are possible. Cached Components are locked post-build
+    so they can't be mutated. Clearing the cache mid-build is pure
+    waste: ~931 sub-cell rebuilds per opamp turn into ~150 unique
+    cache entries instead, saving roughly ~1 s of opamp build time.
+
+    The original intent (kept the gf @cell name-cache from getting
+    stale across PDKs) doesn't apply to our cache. If you really need
+    to clear (testing only), call `_ARG_CACHE.clear()` directly.
+    """
+    pass
 
 
 # --- Active exports — CUTOVER iter-23 (with default_decorator applied).
