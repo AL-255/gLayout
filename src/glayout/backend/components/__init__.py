@@ -1,19 +1,18 @@
 """Backend stock components.
 
-`rectangle` and `rectangular_ring` are still gdsfactory's exports for now —
-the native versions live below as `_native_rectangle` /
-`_native_rectangular_ring` and become the active export at the cutover.
-
-`text_freetype` stays as a gdsfactory re-export for the time being: the
-default DEPLOF font is just a polygon table in `gdsfactory.constants`,
-and bundling that data into glayout is a separate cleanup task post-
-cutover. The audited usage in glayout is for label-only annotation
-(opamp etc. label nets), and any font that draws closed polygons on the
-target layer satisfies LVS/DRC, so this isn't a behavioral risk.
+Native implementations exist for every component glayout uses.
+`rectangle` and `rectangular_ring` are activated alongside the
+Component cutover; `text_freetype` is a thin wrapper around
+`gdstk.text` (gdstk's built-in font produces closed polygons on the
+named layer — sufficient for the labeling use case in glayout, even
+though the glyph shapes differ from gdsfactory's DEPLOF font; DRC/LVS
+only care that the polygons exist on the right layer).
 """
 from __future__ import annotations
 
 from typing import Optional, Tuple
+
+import gdstk
 
 from gdsfactory.components import (
     text_freetype as _gf_text_freetype,
@@ -26,6 +25,50 @@ from glayout.backend.geometry import boolean as _native_boolean
 
 
 _LayerTuple = Tuple[int, int]
+
+
+def _native_text_freetype(
+    text: str = "abcd",
+    size: float = 10,
+    justify: str = "left",
+    layer: _LayerTuple = (1, 0),
+    font: str = "DEPLOF",
+) -> _NativeComponent:
+    """Native text rendering using gdstk.text. The `font` arg is accepted
+    for gdsfactory-compat but ignored — gdstk uses its built-in single
+    stroke font. Glayout's text_freetype usage is for net-label
+    annotation only (e.g. opamp pin labels), so glyph fidelity isn't
+    important; what matters is that polygons land on the right layer
+    so klayout/magic extract the labels correctly.
+
+    `justify` is honored ('left', 'right', 'center') via post-rendering
+    shift of the polygon bbox.
+    """
+    gds_layer, gds_datatype = layer
+    c = _NativeComponent(name="text_freetype")
+    polys = gdstk.text(text, size=float(size), position=(0.0, 0.0),
+                       layer=gds_layer, datatype=gds_datatype)
+    if polys:
+        # Compute bbox for justify shift.
+        xs = []
+        for p in polys:
+            for x, _ in p.points:
+                xs.append(float(x))
+        if xs:
+            xmin, xmax = min(xs), max(xs)
+            if justify == "right":
+                dx = -xmax
+            elif justify == "center":
+                dx = -(xmin + xmax) / 2.0
+            else:
+                dx = -xmin
+        else:
+            dx = 0.0
+        for p in polys:
+            if dx:
+                p.translate(dx, 0.0)
+            c._cell.add(p)
+    return c
 
 
 def _native_rectangle(
@@ -105,4 +148,5 @@ __all__ = [
     "rectangular_ring",
     "_native_rectangle",
     "_native_rectangular_ring",
+    "_native_text_freetype",
 ]

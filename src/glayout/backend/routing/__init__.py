@@ -74,9 +74,58 @@ def _native_route_quad(
     return comp
 
 
+def _native_route_sharp(
+    port1: _NativePort,
+    port2: _NativePort,
+    width: Optional[float] = None,
+    layer: _LayerTuple = (1, 0),
+    cross_section=None,  # gdsfactory-compat, ignored
+) -> _NativeComponent:
+    """Native route_sharp: builds a single-bend Manhattan path between
+    two ports. Glayout imports this in `diff_pair.py` but never calls
+    it (verified by grep), so this implementation exists for surface
+    completeness; if a real caller appears, the math here may need
+    refinement for waveguide-style routes. For the simple electrical
+    use case it draws a width-wide polygon along the L-shape between
+    port centers.
+
+    Approach: a single 90° bend at the intersection of the port axes.
+    """
+    if width is None:
+        width = (port1.width + port2.width) / 2.0
+
+    p1 = np.array(port1.center, dtype=float)
+    p2 = np.array(port2.center, dtype=float)
+
+    delta = p2 - p1
+    # Decide bend direction by which axis the deltas dominate.
+    # Path1: horizontal then vertical, path2: vertical then horizontal.
+    # Pick the one with shortest L1 distance (they're equal — just pick H-first).
+    waypoints = [tuple(p1), (float(p2[0]), float(p1[1])), tuple(p2)]
+
+    # Build the path as a thick polyline.
+    path = gdstk.FlexPath(waypoints, width=float(width),
+                          layer=layer[0], datatype=layer[1])
+
+    comp = _NativeComponent(name="route_sharp")
+    for poly in path.to_polygons():
+        comp._cell.add(poly)
+    comp.add_port(
+        name="e1", center=tuple(port1.center),
+        orientation=(port1.orientation + 180) % 360,
+        width=float(width), layer=layer,
+    )
+    comp.add_port(
+        name="e2", center=tuple(port2.center),
+        orientation=(port2.orientation + 180) % 360,
+        width=float(width), layer=layer,
+    )
+    return comp
+
+
 # Active exports — gdsfactory (pending coordinated Component cutover).
 route_quad = _gf_route_quad
 route_sharp = _gf_route_sharp
 
 
-__all__ = ["route_quad", "route_sharp", "_native_route_quad"]
+__all__ = ["route_quad", "route_sharp", "_native_route_quad", "_native_route_sharp"]
