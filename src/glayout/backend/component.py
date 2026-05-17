@@ -443,9 +443,24 @@ class _NativeComponent:
         return core_schema.is_instance_schema(cls)
 
     def __init__(self, name: Optional[str] = None) -> None:
+        # ALWAYS uniquify the cell name. gdstk caches Cell.bounding_box
+        # results by name internally — if two sibling references in a
+        # parent cell point to Cell objects that share a name (e.g.
+        # multiple `_native_rectangle()` cells all named "rectangle"),
+        # the parent's bounding_box returns only the FIRST cell's bbox,
+        # ignoring the others. Discovered debugging the gdstk-cutover
+        # via_stack mode where evaluate_bbox(viastack) returned 0.15
+        # instead of 0.43, because all sub-rectangles had cell name
+        # "rectangle" and only the first (0.15 via2 patch) was counted.
+        # Suffix the user-supplied name with a counter the same way
+        # gdsfactory's `$N` convention does — preserves the original
+        # name as a prefix so debug names still make sense.
+        type(self)._name_counter += 1
+        cnt = type(self)._name_counter
         if name is None:
-            type(self)._name_counter += 1
-            name = f"Unnamed_{type(self)._name_counter}"
+            name = f"Unnamed_{cnt}"
+        else:
+            name = f"{name}${cnt}"
         self._cell: gdstk.Cell = gdstk.Cell(name)
         self.info: dict = {}
         self.ports: dict[str, _NativePort] = {}

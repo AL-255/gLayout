@@ -30,38 +30,29 @@ def component_snap_to_grid(comp: Component) -> Component:
 				grid_nm = grid * 1000.0
 				cell = getattr(comp, "_cell", None)
 				if cell is not None:
-					# Hybrid snap strategy:
-					# 1. Try per-vertex snap (rounds each vertex to
-					#    grid). This fixes the case where different
-					#    polygons in the same flat cell landed on
-					#    different on-grid integer positions due to
-					#    float-accumulation in the transform chain.
-					# 2. If a polygon's area changes by more than
-					#    ~half the grid (i.e. snap would distort
-					#    shape, e.g. two vertices collapse into one),
-					#    fall back to bbox-translate snap for that
-					#    polygon.
+					# Per-polygon snap: vertex-round when safe (area
+					# preserved within half a grid unit), else
+					# bbox-translate (preserve shape, snap bottom-left
+					# corner). Fixes the float-accumulation drift in
+					# the native rotate/translate chain. No polygon
+					# merging — gdsfactory keeps polygons separate too,
+					# so merging here would create XOR diffs vs the
+					# baseline.
 					old_polys = list(cell.polygons)
 					cell.remove(*old_polys)
 					tol_area_um2 = (grid / 2.0) ** 2
 					for poly in old_polys:
 						pts_nm = poly.points * 1000.0
-						snapped_nm = _np.round(pts_nm / grid_nm) * grid_nm
-						new_pts = snapped_nm / 1000.0
-						# Build a candidate snapped polygon and
-						# compare its area to the original.
+						snap_nm = _np.round(pts_nm / grid_nm) * grid_nm
+						new_pts = snap_nm / 1000.0
 						orig_area = abs(poly.area())
-						candidate = gdstk.Polygon(
+						cand = gdstk.Polygon(
 							new_pts, layer=poly.layer, datatype=poly.datatype,
 						)
-						new_area = abs(candidate.area())
+						new_area = abs(cand.area())
 						if abs(new_area - orig_area) <= tol_area_um2 and new_area > 0:
-							# Per-vertex snap is safe (small area delta).
-							cell.add(candidate)
+							cell.add(cand)
 						else:
-							# Per-vertex snap distorts → fall back to
-							# bbox-translate (preserve shape, snap
-							# bottom-left corner to grid).
 							x0_nm = pts_nm[:, 0].min()
 							y0_nm = pts_nm[:, 1].min()
 							sx_nm = round(x0_nm / grid_nm) * grid_nm
