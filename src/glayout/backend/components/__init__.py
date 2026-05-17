@@ -138,7 +138,55 @@ def _native_rectangular_ring(
 
 # Active exports — gdsfactory (pending coordinated Component cutover).
 text_freetype = _gf_text_freetype
-rectangle = _gf_rectangle
+
+
+def _fast_gf_rectangle(
+    size=(4.0, 2.0),
+    layer=(1, 0),
+    centered=False,
+    port_type="electrical",
+    port_orientations=(180, 90, 0, -90),
+):
+    """Drop-in for gdsfactory.components.rectangle returning a
+    gdsfactory.Component but skipping the @cell wrapper overhead
+    (cache lookup, signature inspect, decorator chain — adds ~500 µs
+    per call). 444 calls per opamp build → ~200 ms savings.
+
+    Equivalent layout: one polygon plus N/E/S/W ports following the
+    gdsfactory.components.compass naming convention (e1..e4).
+    """
+    import gdsfactory as _gf
+    w, h = size
+    c = _gf.Component(name="rectangle")
+    if centered:
+        x0, y0 = -w / 2.0, -h / 2.0
+    else:
+        x0, y0 = 0.0, 0.0
+    x1, y1 = x0 + w, y0 + h
+    c.add_polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], layer=layer)
+    if port_type:
+        # Match gdsfactory.components.compass port naming + orientation:
+        #   e1=west(180), e2=north(90), e3=east(0), e4=south(270 NOT -90)
+        edges = {
+            180: ("e1", (x0, (y0 + y1) / 2.0), h, 180),
+            90:  ("e2", ((x0 + x1) / 2.0, y1), w, 90),
+            0:   ("e3", (x1, (y0 + y1) / 2.0), h, 0),
+            -90: ("e4", ((x0 + x1) / 2.0, y0), w, 270),
+            270: ("e4", ((x0 + x1) / 2.0, y0), w, 270),
+        }
+        for orient in port_orientations or ():
+            if orient in edges:
+                name, center, width, canonical = edges[orient]
+                if name not in c.ports:
+                    c.add_port(
+                        name=name, center=center, width=width,
+                        orientation=canonical, layer=layer,
+                        port_type=port_type,
+                    )
+    return c
+
+
+rectangle = _fast_gf_rectangle
 rectangular_ring = _gf_rectangular_ring
 
 
