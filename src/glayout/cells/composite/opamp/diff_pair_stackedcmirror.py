@@ -1,7 +1,7 @@
-from gdsfactory.cell import cell, clear_cache
-from gdsfactory.component import Component, copy
-from gdsfactory.component_reference import ComponentReference
-from gdsfactory.components.rectangle import rectangle
+from glayout.backend.cell import cell, clear_cache
+from glayout.backend.component import Component, copy
+from glayout.backend.component_reference import ComponentReference
+from glayout.backend.components import rectangle
 from glayout.pdk.mappedpdk import MappedPDK
 from typing import Optional, Union
 from glayout.cells.elementary.diff_pair import diff_pair
@@ -11,7 +11,7 @@ from glayout.primitives.mimcap import mimcap_array, mimcap
 from glayout.primitives.via_gen import via_stack, via_array
 from glayout.routing.L_route import L_route
 from glayout.routing.c_route import c_route
-from gdsfactory.routing.route_quad import route_quad
+from glayout.backend.routing import route_quad
 from glayout.util.comp_utils import evaluate_bbox, prec_ref_center, movex, movey, to_decimal, to_float, move, align_comp_to_port, get_padding_points_cc
 from glayout.util.port_utils import rename_ports_by_orientation, rename_ports_by_list, add_ports_perimeter, print_ports, set_port_orientation, rename_component_ports
 from glayout.routing.straight_route import straight_route
@@ -80,7 +80,7 @@ def __route_bottom_ncomps_except_drain_nbias(pdk: MappedPDK, toplevel_stacked: C
     # leaving a sliver gap that trips m2.2a. Stamp an m2 patch at each
     # corner that overlaps both polygons so they merge in DRC.
     if pdk.name.lower() == "gf180":
-        from gdsfactory.components.rectangle import rectangle as _rect
+        from glayout.backend.components import rectangle as _rect
         _m2 = pdk.get_glayer("met2")
         # Use cmirror_ref_L's drain_E port (center.x is the inner edge of
         # cmirror_ref_L's leftmost drain column on m2; mirror for R) and

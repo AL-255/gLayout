@@ -1,10 +1,10 @@
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
-from gdsfactory.component import Component
-from gdsfactory.component_reference import ComponentReference
-from gdsfactory.cell import cell
-from gdsfactory import Component
-from gdsfactory.components import text_freetype, rectangle
+from glayout.backend.component import Component
+from glayout.backend.component_reference import ComponentReference
+from glayout.backend.cell import cell
+from glayout.backend import Component
+from glayout.backend.components import text_freetype, rectangle
 from glayout.primitives.fet import nmos, pmos, multiplier
 from glayout.util.comp_utils import evaluate_bbox, prec_center, align_comp_to_port, prec_ref_center
 from glayout.util.snap_to_grid import component_snap_to_grid

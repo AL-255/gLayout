@@ -2,8 +2,8 @@
 usage: from mappedpdk import MappedPDK
 """
 import re
-from gdsfactory.pdk import Pdk
-from gdsfactory.typings import Component, PathType, Layer
+from glayout.backend.pdk import Pdk
+from glayout.backend.typings import Component, PathType, Layer
 from pydantic import validator, StrictStr, ValidationError
 from typing import ClassVar, Optional, Any, Union, Literal, Iterable, TypedDict
 from pathlib import Path

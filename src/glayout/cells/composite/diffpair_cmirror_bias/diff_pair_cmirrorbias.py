@@ -1,7 +1,7 @@
-from gdsfactory.cell import cell, clear_cache
-from gdsfactory.component import Component, copy
-from gdsfactory.component_reference import ComponentReference
-from gdsfactory.components.rectangle import rectangle
+from glayout.backend.cell import cell, clear_cache
+from glayout.backend.component import Component, copy
+from glayout.backend.component_reference import ComponentReference
+from glayout.backend.components import rectangle
 from glayout import MappedPDK, sky130,gf180
 from glayout.routing import c_route,L_route,straight_route
 from typing import Optional, Union
@@ -10,7 +10,7 @@ from glayout.primitives.fet import nmos, pmos, multiplier
 from glayout.primitives.guardring import tapring
 from glayout.primitives.mimcap import mimcap_array, mimcap
 from glayout.primitives.via_gen import via_stack, via_array
-from gdsfactory.routing.route_quad import route_quad
+from glayout.backend.routing import route_quad
 from glayout.util.comp_utils import (
     evaluate_bbox,
     prec_ref_center,

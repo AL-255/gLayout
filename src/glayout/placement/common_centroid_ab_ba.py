@@ -7,11 +7,11 @@ from glayout.util.comp_utils import evaluate_bbox, movex, move, movey, align_com
 from glayout.util.port_utils import set_port_orientation, rename_ports_by_orientation, create_private_ports
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.primitives.guardring import tapring
-from gdsfactory.components import rectangle
+from glayout.backend.components import rectangle
 from typing import Union, Optional
 from itertools import product
 
-from gdsfactory import Component
+from glayout.backend import Component
 
 
 def common_centroid_ab_ba(

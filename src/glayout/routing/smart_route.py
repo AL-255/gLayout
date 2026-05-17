@@ -1,8 +1,8 @@
 import warnings
 from typing import Optional, Union
 
-from gdsfactory import Component, ComponentReference
-from gdsfactory.port import Port
+from glayout.backend import Component, ComponentReference
+from glayout.backend.port import Port
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.util.comp_utils import align_comp_to_port, movex
 from glayout.util.port_utils import (

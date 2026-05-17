@@ -1,13 +1,13 @@
 try:
-    from gdsfactory.cell import cell
+    from glayout.backend.cell import cell
 except ModuleNotFoundError:
     def cell(func=None, **kwargs):
         if func:
             return func
         return lambda f: f
 
-from gdsfactory.component import Component
-from gdsfactory.components.rectangle import rectangle
+from glayout.backend.component import Component
+from glayout.backend.components import rectangle
 from pydantic import validate_arguments
 from glayout.pdk.mappedpdk import MappedPDK
 from math import floor

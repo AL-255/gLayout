@@ -1,9 +1,9 @@
-from gdsfactory.read.import_gds import import_gds
-from gdsfactory.component import Component
+from glayout.backend.read import import_gds
+from glayout.backend.component import Component
 from pathlib import Path
 import os
 import math
-from gdsfactory.pdk import Pdk
+from glayout.backend.pdk import Pdk
 from pathlib import Path
 from typing import Union, Optional
 from pydantic import validate_arguments
