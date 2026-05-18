@@ -237,39 +237,68 @@ def _activate_native_classes() -> None:
 
 
 def _strip_validate_arguments_from_loaded_modules() -> int:
-    """Walk already-imported glayout modules and replace any
-    pydantic @validate_arguments wrappers with the raw function.
+    """Walk already-imported glayout modules AND their classes,
+    replacing any pydantic @validate_arguments wrappers with the
+    raw function.
 
     The deprecated @validate_arguments decorator returns a wrapper
     with three telltale attributes: `raw_function`, `vd`
-    (ValidatedFunction), and `model`. We swap the module attribute
-    back to `raw_function` for any callable that has those, saving
-    ~1 s of Pydantic-validation overhead per opamp build.
+    (ValidatedFunction), and `model`. We swap the holder attribute
+    back to `raw_function` for any callable that has those.
 
-    Returns the number of functions stripped (for debug visibility)."""
+    Returns the number of functions stripped (for debug visibility).
+    """
     import sys
+    import inspect
     stripped = 0
+
+    def _is_va_wrapper(obj):
+        if not callable(obj):
+            return False
+        raw = getattr(obj, "raw_function", None)
+        if raw is None or raw is obj:
+            return False
+        return hasattr(obj, "vd") and hasattr(obj, "model")
+
     target_modules = [m for n, m in sys.modules.items()
                       if n.startswith("glayout.") and m is not None]
+    visited_classes = set()
     for mod in target_modules:
         try:
             mod_dict = vars(mod)
         except Exception:
             continue
         for name, obj in list(mod_dict.items()):
-            if not callable(obj):
+            # Module-level wrapper
+            if _is_va_wrapper(obj):
+                try:
+                    setattr(mod, name, obj.raw_function)
+                    stripped += 1
+                except Exception:
+                    pass
                 continue
-            raw = getattr(obj, "raw_function", None)
-            if raw is None or raw is obj:
-                continue
-            # Confirm the pydantic-wrapper signature.
-            if not (hasattr(obj, "vd") and hasattr(obj, "model")):
-                continue
-            try:
-                setattr(mod, name, raw)
-                stripped += 1
-            except Exception:
-                pass
+            # Class — walk its attributes for wrappers
+            if inspect.isclass(obj):
+                cid = id(obj)
+                if cid in visited_classes:
+                    continue
+                visited_classes.add(cid)
+                # Only strip classes defined in glayout (skip imports
+                # from gdsfactory etc. to avoid touching foreign code).
+                cmod = getattr(obj, "__module__", "")
+                if not cmod.startswith("glayout."):
+                    continue
+                for attr_name in list(vars(obj).keys()):
+                    try:
+                        attr = vars(obj)[attr_name]
+                    except KeyError:
+                        continue
+                    if _is_va_wrapper(attr):
+                        try:
+                            setattr(obj, attr_name, attr.raw_function)
+                            stripped += 1
+                        except Exception:
+                            pass
     return stripped
 
 
