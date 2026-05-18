@@ -17,7 +17,7 @@ def component_snap_to_grid(comp: Component) -> Component:
 	# no nested refs — they're already-flat rectangles).
 	try:
 		import os
-		if (os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk"
+		if (os.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython")
 				and not comp._cell.references):
 			return comp
 	except Exception:
@@ -35,7 +35,7 @@ def component_snap_to_grid(comp: Component) -> Component:
 	# the two paths so the same DRC-clean GDS comes out either way.
 	try:
 		import os
-		if os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+		if os.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython"):
 			from glayout.backend._active import get_grid_size_um
 			import gdstk
 			import numpy as _np

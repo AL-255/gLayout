@@ -5,6 +5,28 @@ from pathlib import Path
 this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text()
 
+# Cython extension for the `GLAYOUT_BACKEND=gdstk_cython` fast paths.
+# Pyproject.toml's build-system.requires pulls Cython in before setup.py
+# runs, so this import always succeeds during `pip install`.
+from Cython.Build import cythonize
+from setuptools import Extension
+
+ext_modules = cythonize(
+    [
+        Extension(
+            "glayout.backend._cython._hotpaths",
+            sources=["src/glayout/backend/_cython/_hotpaths.pyx"],
+        ),
+    ],
+    language_level=3,
+    compiler_directives={
+        "boundscheck": False,
+        "wraparound": False,
+        "initializedcheck": False,
+    },
+)
+
+
 setup(
     name="glayout",
     version="0.1.3",
@@ -68,6 +90,7 @@ setup(
             "argparse",          
         ]
     },
+    ext_modules=ext_modules,
     python_requires=">=3.10",
     classifiers=[
         "Development Status :: 4 - Beta",

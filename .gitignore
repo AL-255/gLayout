@@ -266,3 +266,6 @@ drc_results/
 CUTOVER_PROGRESS.md
 benchmark/xor_*.gds
 benchmark/xor_*.json
+
+# Cython-generated C source (rebuilt from .pyx)
+src/glayout/backend/_cython/*.c

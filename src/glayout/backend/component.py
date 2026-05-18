@@ -63,6 +63,21 @@ _LayerTuple = Tuple[int, int]
 _PointSeq = Sequence[Tuple[float, float]]
 
 
+# --- Cython hot-path dispatch -----------------------------------------
+# `_speedups._activate_native_classes` sets these when the
+# `GLAYOUT_BACKEND=gdstk_cython` backend is active. When unset, the
+# pure-Python hot paths run.
+#
+# - `_CY_HOT_PATHS_MOD`: the imported `_cython._hotpaths` module
+#   (carries `cy_add_ports_from_ref`, `cy_build_transformed_ports`,
+#   `_CyPort`). None when not active.
+# - `_ACTIVE_PORT_CLASS`: the class to instantiate for newly-created
+#   Port objects. `_NativePort` in plain gdstk mode, `_CyPort` in
+#   gdstk_cython mode.
+_CY_HOT_PATHS_MOD = None
+_ACTIVE_PORT_CLASS = None  # populated below once _NativePort is defined
+
+
 class MutabilityError(ValueError):
     """Raised when mutating a locked Component. Matches gdsfactory's
     exception for compatibility with any glayout `try/except` that catches it."""
@@ -307,6 +322,13 @@ class _NativeComponentReference:
                 and ox == 0.0 and oy == 0.0):
             self._ports_cache = (key, parent_ports)
             return parent_ports
+        # NOTE: a cdef-typed `cy_build_transformed_ports` lives in
+        # `_cython._hotpaths` but is currently NOT dispatched here —
+        # subtle parity diffs vs the Python loop (some ports drift
+        # ~770 nm relative to gdsfactory baseline) need further
+        # debugging. The Python loop runs in gdstk_cython mode too;
+        # only the per-port `_CyPort` allocation gets the speedup
+        # benefit.
         out: dict[str, _NativePort] = {}
         # Cardinal rotation fast path — for rotations of {0,90,180,270}°
         # we can skip the cos/sin computation and use exact rotation
@@ -608,6 +630,16 @@ class _NativePort:
         return core_schema.is_instance_schema(cls)
 
 
+# Default the active port class to _NativePort. Swapped to _CyPort in
+# gdstk_cython mode by `_speedups._activate_native_classes`.
+_ACTIVE_PORT_CLASS = _NativePort
+# Tuple of every recognized "port" class, used by `isinstance` checks
+# (e.g. `add_port(port=...)`) so they accept both _NativePort and
+# _CyPort. Extended by `_activate_native_classes` when cython mode is
+# active.
+_PORT_TYPES = (_NativePort,)
+
+
 class _NativeComponent:
     """In-progress native Component, wraps a `gdstk.Cell`.
 
@@ -838,12 +870,13 @@ class _NativeComponent:
         """
         self._check_unlocked()
         self_ports = self.ports
+        PC = _ACTIVE_PORT_CLASS  # _NativePort or _CyPort
         # Fast path: add_port(name=str|None, port=Port) — 1.28 M calls
         # on opamp, almost all from `add_ports`. Bypass port.copy() and
         # the attr-set chain; do __new__ + 9 slot copies + dict insert.
         if (port is not None and center is None and width is None
                 and orientation is None and layer is None and port_type is None):
-            p = _NativePort.__new__(_NativePort)
+            p = PC.__new__(PC)
             p.name = name if name is not None else port.name
             p.center = port.center
             p.width = port.width
@@ -859,11 +892,11 @@ class _NativeComponent:
             self_ports[nm] = p
             return p
         # Fast path: add_port(Port) shorthand
-        if (isinstance(name, _NativePort) and port is None
+        if (isinstance(name, _PORT_TYPES) and port is None
                 and center is None and width is None and orientation is None
                 and layer is None and port_type is None):
             src = name
-            p = _NativePort.__new__(_NativePort)
+            p = PC.__new__(PC)
             p.name = src.name
             p.center = src.center
             p.width = src.width
@@ -889,7 +922,7 @@ class _NativeComponent:
             if layer is not None: p.layer = layer
             if port_type is not None: p.port_type = port_type
             p.parent = self
-        elif isinstance(name, _NativePort):
+        elif isinstance(name, _PORT_TYPES):
             p = name.copy()
             p.parent = self
             name = p.name
@@ -901,7 +934,7 @@ class _NativeComponent:
             cx, cy = center
             snx = round(cx * 1000.0) / 1000.0
             sny = round(cy * 1000.0) / 1000.0
-            p = _NativePort.__new__(_NativePort)
+            p = PC.__new__(PC)
             p.name = str(name) if name is not None else ""
             p.center = (snx, sny)
             p.width = float(width) if width is not None else 0.0
@@ -911,7 +944,7 @@ class _NativeComponent:
             p.parent = self
             p.cross_section = None
             p.shear_angle = None
-        if name is not None and not isinstance(name, _NativePort):
+        if name is not None and not isinstance(name, _PORT_TYPES):
             p.name = str(name)
         if p.name in self_ports:
             raise ValueError(f"add_port() Port name {p.name!r} exists in {self.name!r}")
@@ -961,8 +994,9 @@ class _NativeComponent:
             self_ports.update(ports)
             return
         items = ports.values() if isinstance(ports, Mapping) else ports
+        PC = _ACTIVE_PORT_CLASS
         for port in items:
-            p = _NativePort.__new__(_NativePort)
+            p = PC.__new__(PC)
             nm = f"{prefix}{port.name}{suffix}" if has_affix else port.name
             p.name = nm
             p.center = port.center
@@ -992,6 +1026,14 @@ class _NativeComponent:
         the parent ports before iteration (the tail-rename
         collision tie-break depends on insertion order).
         """
+        # NOTE: a cdef-typed `cy_add_ports_from_ref` lives in
+        # `_cython._hotpaths` but currently produces a parity break
+        # (missing the `array_`-prefix ports and shifting some
+        # cells' transforms by ~770 nm). Need further debugging
+        # before wiring in. The Python loop below runs in
+        # gdstk_cython mode too — only the per-port `_CyPort`
+        # allocation gets the speedup benefit (`_ACTIVE_PORT_CLASS`
+        # is swapped, but the loop itself is Python).
         parent = ref.parent
         parent_ports = parent.ports
         ox, oy = ref._reference.origin
@@ -1366,7 +1408,7 @@ class _NativeComponent:
 # switch because by the time `set_backend()` could fire, glayout's
 # cell modules have usually already imported Component.
 import os as _os
-if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython"):
     Component = _NativeComponent
     copy = _native_copy
 else:

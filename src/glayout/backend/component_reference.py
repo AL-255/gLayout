@@ -14,7 +14,7 @@ from glayout.backend.component import _NativeComponentReference
 import os as _os
 ComponentReference = (
     _NativeComponentReference
-    if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk"
+    if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython")
     else _GFComponentReference
 )
 

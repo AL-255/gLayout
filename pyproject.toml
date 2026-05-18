@@ -1,0 +1,7 @@
+[build-system]
+# Cython is required so `pip install -e .` can compile the
+# `glayout.backend._cython._hotpaths` extension (the GLAYOUT_BACKEND=gdstk_cython
+# fast paths). Setuptools handles everything else; setup.py is still the
+# source of truth for metadata / install_requires.
+requires = ["setuptools>=61", "wheel", "Cython>=3.0", "numpy"]
+build-backend = "setuptools.build_meta"

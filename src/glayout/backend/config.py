@@ -32,9 +32,9 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-Backend = Literal["native", "gdsfactory", "gdstk"]
+Backend = Literal["native", "gdsfactory", "gdstk", "gdstk_cython"]
 
-_VALID = ("native", "gdsfactory", "gdstk")
+_VALID = ("native", "gdsfactory", "gdstk", "gdstk_cython")
 
 # Tri-state: None = not explicitly set, fall through to env var or default.
 _explicit: str | None = None
@@ -65,16 +65,29 @@ def get_backend() -> Backend:
 
 def is_native() -> bool:
     """True when the optimized native (gdsfactory + monkey-patches)
-    backend is active. Both 'native' and 'gdstk' install the speedup
-    patches; only 'gdsfactory' opts out."""
-    return get_backend() in ("native", "gdstk")
+    backend is active. 'native', 'gdstk', and 'gdstk_cython' all
+    install the speedup patches; only 'gdsfactory' opts out."""
+    return get_backend() in ("native", "gdstk", "gdstk_cython")
 
 
 def is_gdstk() -> bool:
-    """True when the pure-gdstk backend is selected — the staged
-    native Component / ComponentReference / Port classes replace
+    """True when EITHER pure-gdstk backend (Python `_Native*` or
+    Cython `_CyPort`) is selected — both swap the staged native
+    Component / ComponentReference / Port classes in for
     gdsfactory's at apply_speedups() time."""
-    return get_backend() == "gdstk"
+    return get_backend() in ("gdstk", "gdstk_cython")
 
 
-__all__ = ["set_backend", "get_backend", "is_native", "is_gdstk", "Backend"]
+def is_gdstk_cython() -> bool:
+    """True when the Cython-accelerated gdstk backend is selected.
+    Same Python `_NativeComponent` / `_NativeComponentReference` as
+    plain gdstk, but with `_CyPort` (cdef class) substituted for
+    `_NativePort` and cdef hot-loop helpers wired in for the
+    `_add_ports_from_ref` / `ref.ports` paths."""
+    return get_backend() == "gdstk_cython"
+
+
+__all__ = [
+    "set_backend", "get_backend", "is_native", "is_gdstk",
+    "is_gdstk_cython", "Backend",
+]

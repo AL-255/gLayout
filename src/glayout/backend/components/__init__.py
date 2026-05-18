@@ -225,7 +225,7 @@ def _fast_gf_rectangular_ring(
 
 
 import os as _os
-if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython"):
     rectangle = _native_rectangle
     rectangular_ring = _native_rectangular_ring
 else:

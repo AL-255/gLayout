@@ -12,9 +12,15 @@ from gdsfactory.port import Port as _GFPort
 # leaking the implementation location.
 from glayout.backend.component import _NativePort
 
-# Active export — gdsfactory (pending coordinated Component cutover).
+# Active export — picked at import time based on GLAYOUT_BACKEND.
+# `_speedups._activate_native_classes` later swaps `Port` to the
+# Cython `_CyPort` when `GLAYOUT_BACKEND=gdstk_cython` is selected.
 import os as _os
-Port = _NativePort if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk" else _GFPort
+_mode = _os.environ.get("GLAYOUT_BACKEND", "").strip().lower()
+if _mode in ("gdstk", "gdstk_cython"):
+    Port = _NativePort  # swapped to _CyPort by _activate_native_classes for gdstk_cython
+else:
+    Port = _GFPort
 
 
 __all__ = ["Port", "_NativePort"]

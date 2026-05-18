@@ -125,7 +125,7 @@ def _native_route_sharp(
 
 # Active exports — gdsfactory by default, native in gdstk mode.
 import os as _os
-if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+if _os.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython"):
     route_quad = _native_route_quad
     route_sharp = _native_route_sharp
 else:

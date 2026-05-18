@@ -202,6 +202,36 @@ def apply_speedups(pdk) -> None:
     _applied = True
 
 
+def _install_cy_serializer_patch(_CyPort) -> None:
+    """Monkey-patch `gdsfactory.serialization.clean_value_json` so it
+    can serialize `_CyPort` instances. Without this, gdsfactory's
+    `@cell` arg-hash code (called whenever a routing function takes a
+    Port as an arg) raises TypeError because orjson can't serialize
+    cdef classes.
+
+    Also patches the same name imported into `gdsfactory.cell`
+    (Python evaluates the imported name at call time, but cell.py
+    captured it via `from ... import` so we patch both holders).
+    """
+    try:
+        import gdsfactory.serialization as _gfs
+        import gdsfactory.cell as _gfc
+        _orig = _gfs.clean_value_json
+
+        def patched(value):
+            if isinstance(value, _CyPort):
+                return value.as_dict()
+            return _orig(value)
+
+        _gfs.clean_value_json = patched
+        # `gdsfactory.cell` imported `clean_value_name` (which
+        # internally calls `clean_value_json`); the function lookup
+        # `_gfs.clean_value_json` happens at call-time so patching
+        # the module attribute is enough.
+    except Exception:
+        pass
+
+
 def _activate_native_classes() -> None:
     """Swap the live `Component`, `ComponentReference`, `Port` exports
     in `glayout.backend.*` to their staged native (`_Native*`) versions.
@@ -214,25 +244,73 @@ def _activate_native_classes() -> None:
     Active classes are also propagated to `glayout.backend.typings`
     and into already-imported modules that captured them at import
     time (component_reference, component, port).
+
+    When `GLAYOUT_BACKEND=gdstk_cython` is active, additionally:
+      - Set the exported `Port` to `_CyPort` (the cdef class).
+      - Install the `_hotpaths` module reference on `_bc._CY_HOT_PATHS_MOD`
+        so the Python `_NativeComponentReference.ports` and
+        `_NativeComponent._add_ports_from_ref` dispatch to the cdef
+        helpers instead of running the Python loop.
     """
     import glayout.backend.component as _bc
     import glayout.backend.component_reference as _bcr
     import glayout.backend.port as _bp
     import glayout.backend.typings as _bt
+
+    # Resolve the active Port class. Default is the pure-Python
+    # _NativePort; gdstk_cython mode swaps in the Cython _CyPort.
+    PortCls = _bc._NativePort
+    _bc._PORT_TYPES = (_bc._NativePort,)
+    try:
+        from glayout.backend.config import is_gdstk_cython
+        if is_gdstk_cython():
+            from glayout.backend._cython import (
+                _CyPort,
+                cy_add_ports_from_ref,
+                cy_build_transformed_ports,
+            )
+            PortCls = _CyPort
+            # Hand the component module a reference to the cython
+            # helpers — its hot paths fire `_CY_HOT_PATHS_MOD.cy_*`
+            # when this is non-None.
+            import glayout.backend._cython._hotpaths as _hp
+            _bc._CY_HOT_PATHS_MOD = _hp
+            _bc._ACTIVE_PORT_CLASS = _CyPort
+            _bc._PORT_TYPES = (_bc._NativePort, _CyPort)
+            # gdsfactory's `clean_value_json` (used by `@cell` for arg
+            # hashing) hands unknown values to `orjson.dumps`, which
+            # only knows how to serialize dataclasses (it walks
+            # `__dataclass_fields__`). cdef classes are immutable so
+            # we can't attach a fake `__dataclass_fields__` from
+            # Python; instead patch the serializer to detect _CyPort
+            # and return its `.as_dict()`.
+            _install_cy_serializer_patch(_CyPort)
+        else:
+            _bc._CY_HOT_PATHS_MOD = None
+            _bc._ACTIVE_PORT_CLASS = _bc._NativePort
+    except Exception as _e:
+        # Cython extension not built or import failed — fall back to
+        # pure-Python ports. Print so silent fallback is visible.
+        import sys
+        print(f"[glayout] gdstk_cython activation failed, falling back to "
+              f"_NativePort: {type(_e).__name__}: {_e}", file=sys.stderr)
+        _bc._CY_HOT_PATHS_MOD = None
+        _bc._ACTIVE_PORT_CLASS = _bc._NativePort
+
     _bc.Component = _bc._NativeComponent
     _bc.copy = _bc._native_copy
     _bcr.ComponentReference = _bc._NativeComponentReference
-    _bp.Port = _bc._NativePort
+    _bp.Port = PortCls
     _bt.Component = _bc._NativeComponent
     _bt.ComponentReference = _bc._NativeComponentReference
-    _bt.Port = _bc._NativePort
+    _bt.Port = PortCls
     # Also propagate into the `glayout.backend` package namespace
     # in case anything imported via the package-level export.
     import glayout.backend as _bb
     _bb.Component = _bc._NativeComponent
     _bb.ComponentReference = _bc._NativeComponentReference
     _bb.Reference = _bc._NativeComponentReference
-    _bb.Port = _bc._NativePort
+    _bb.Port = PortCls
     _bb.copy = _bc._native_copy
 
 
@@ -466,7 +544,7 @@ def _patch_gf_ref_ports(RefCls) -> None:
         # gdstk mode: must match gdsfactory's sort exactly so
         # rename_ports_by_orientation collisions tie-break the same way.
         import os as _os_local
-        if _os_local.environ.get("GLAYOUT_BACKEND", "").strip().lower() == "gdstk":
+        if _os_local.environ.get("GLAYOUT_BACKEND", "").strip().lower() in ("gdstk", "gdstk_cython"):
             from gdsfactory.port import select_ports, sort_ports_clockwise
             if kwargs:
                 return list(select_ports(self.ports, **kwargs).values())
@@ -602,7 +680,7 @@ def _patch_gf_component_add_ports(CompCls, PortCls) -> None:
         # the missing array_ ports cause a 20 nm gate_S placement
         # drift in nmos/pmos primitives).
         import os as _os_local
-        if prefix == "array_" and _os_local.environ.get("GLAYOUT_BACKEND", "").strip().lower() != "gdstk":
+        if prefix == "array_" and _os_local.environ.get("GLAYOUT_BACKEND", "").strip().lower() not in ("gdstk", "gdstk_cython"):
             return
         if kwargs:
             return _orig(self, ports, prefix=prefix, suffix=suffix, **kwargs)
