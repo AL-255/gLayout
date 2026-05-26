@@ -1,3 +1,4 @@
+from typing import Optional
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
 from gdsfactory.cell import cell
@@ -45,17 +46,25 @@ def get_component_netlist(component):
 def fvf_netlist(fet_1: Component, fet_2: Component) -> Netlist:
 
          netlist = Netlist(circuit_name='FLIPPED_VOLTAGE_FOLLOWER', nodes=['VIN', 'VBULK', 'VOUT', 'Ib'])
-         
-         # Use helper function to get netlist objects regardless of gdsfactory version
+
+         # Both fets' dummies tie to VBULK:
+         # * sky130 magic absorbs floating dummies into the bulk during
+         #   parallel-device merging, so DUM=VBULK matches the extraction.
+         # * gf180 klayout: add_fvf_labels now stamps VBULK on BOTH fets'
+         #   welltie rings, so the dummies' G/S/D (which physically connect
+         #   to the welltie metal via the inter-finger diffusion contacts)
+         #   end up on the labeled VBULK net.
          fet_1_netlist = get_component_netlist(fet_1)
          fet_2_netlist = get_component_netlist(fet_2)
-         netlist.connect_netlist(fet_1_netlist, [('D', 'Ib'), ('G', 'VIN'), ('S', 'VOUT'), ('B', 'VBULK')])
-         netlist.connect_netlist(fet_2_netlist, [('D', 'VOUT'), ('G', 'Ib'), ('S', 'VBULK'), ('B', 'VBULK')])
+         netlist.connect_netlist(fet_1_netlist, [('D', 'Ib'), ('G', 'VIN'), ('S', 'VOUT'), ('B', 'VBULK'), ('DUM', 'VBULK')])
+         netlist.connect_netlist(fet_2_netlist, [('D', 'VOUT'), ('G', 'Ib'), ('S', 'VBULK'), ('B', 'VBULK'), ('DUM', 'VBULK')])
 
          return netlist
 
+
+
 def sky130_add_fvf_labels(fvf_in: Component) -> Component:
-    
+
     fvf_in.unlock()
     # define layers`
     met1_pin = (68,16)
@@ -69,28 +78,72 @@ def sky130_add_fvf_labels(fvf_in: Component) -> Component:
     gnd2label = rectangle(layer=met1_pin,size=(0.5,0.5),centered=True).copy()
     gnd2label.add_label(text="VBULK",layer=met1_label)
     move_info.append((gnd2label,fvf_in.ports["B_tie_N_top_met_N"],None))
-    
+
     #currentbias
     ibiaslabel = rectangle(layer=met2_pin,size=(0.5,0.5),centered=True).copy()
     ibiaslabel.add_label(text="Ib",layer=met2_label)
     move_info.append((ibiaslabel,fvf_in.ports["A_drain_bottom_met_N"],None))
-    
+
     # output (3rd stage)
     outputlabel = rectangle(layer=met2_pin,size=(0.5,0.5),centered=True).copy()
     outputlabel.add_label(text="VOUT",layer=met2_label)
     move_info.append((outputlabel,fvf_in.ports["A_source_bottom_met_N"],None))
-    
+
     # input
     inputlabel = rectangle(layer=met1_pin,size=(0.5,0.5),centered=True).copy()
     inputlabel.add_label(text="VIN",layer=met1_label)
     move_info.append((inputlabel,fvf_in.ports["A_multiplier_0_gate_N"], None))
-    
+
     # move everything to position
     for comp, prt, alignment in move_info:
         alignment = ('c','b') if alignment is None else alignment
         compref = align_comp_to_port(comp, prt, alignment=alignment)
         fvf_in.add(compref)
-    return fvf_in.flatten() 
+    return fvf_in.flatten()
+
+
+def add_fvf_labels(fvf_in: Component, pdk: MappedPDK) -> Component:
+    """PDK-aware FVF label adder. Welltie ring & gate sit on glayout met2;
+    drain/source via tops sit on glayout met3 (via_stack(met2,met3))."""
+    fvf_in.unlock()
+    move_info = list()
+
+    # VBULK — stamp on BOTH fets' welltie rings so klayout's gf180 deck
+    # binds both pwells (fet_1 + fet_2) to the same VBULK net. Without
+    # the fet_1-side stamp, the input fet's dummies and other floating
+    # diffusion areas land on a per-cell auto-named net, which breaks the
+    # schematic-vs-layout dummy match (the schematic puts both fets'
+    # dummies on the bulk via the welltie ring's own substrate contact).
+    for _portname in ("A_tie_N_top_met_N", "B_tie_N_top_met_N"):
+        if _portname not in fvf_in.ports:
+            continue
+        vbulklabel = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.5,0.5), centered=True).copy()
+        vbulklabel.add_label(text="VBULK", layer=pdk.get_glayer("met2_label"))
+        # ('c','c') keeps the label inside the welltie metal regardless of
+        # port orientation (south-facing ports + 'b' default would land
+        # the rectangle below the ring with no underlying metal).
+        move_info.append((vbulklabel, fvf_in.ports[_portname], ('c','c')))
+
+    # Ib — drain via top (glayout met3)
+    ibiaslabel = rectangle(layer=pdk.get_glayer("met3_pin"), size=(0.5,0.5), centered=True).copy()
+    ibiaslabel.add_label(text="Ib", layer=pdk.get_glayer("met3_label"))
+    move_info.append((ibiaslabel, fvf_in.ports["A_drain_bottom_met_N"], None))
+
+    # VOUT — source via top (glayout met3)
+    voutlabel = rectangle(layer=pdk.get_glayer("met3_pin"), size=(0.5,0.5), centered=True).copy()
+    voutlabel.add_label(text="VOUT", layer=pdk.get_glayer("met3_label"))
+    move_info.append((voutlabel, fvf_in.ports["A_source_bottom_met_N"], None))
+
+    # VIN — gate (glayout met2)
+    vinlabel = rectangle(layer=pdk.get_glayer("met2_pin"), size=(0.5,0.5), centered=True).copy()
+    vinlabel.add_label(text="VIN", layer=pdk.get_glayer("met2_label"))
+    move_info.append((vinlabel, fvf_in.ports["A_multiplier_0_gate_N"], None))
+
+    for comp, prt, alignment in move_info:
+        alignment = ('c','b') if alignment is None else alignment
+        compref = align_comp_to_port(comp, prt, alignment=alignment)
+        fvf_in.add(compref)
+    return fvf_in.flatten()
 
 @cell
 def  flipped_voltage_follower(
@@ -126,7 +179,7 @@ def  flipped_voltage_follower(
     """
    
     #top level component
-    top_level = Component(name="flipped_voltage_follower")
+    top_level = Component()
 
     #two fets
     device_map = {
@@ -141,14 +194,39 @@ def  flipped_voltage_follower(
     
     fet_1 = device(pdk, width=width[0], fingers=fingers[0], multipliers=multipliers[0], with_dummy=dummy_1, with_substrate_tap=False, length=length[0], tie_layers=tie_layers1, sd_rmult=sd_rmult, **kwargs)
     fet_2 = device(pdk, width=width[1], fingers=fingers[1], multipliers=multipliers[1], with_dummy=dummy_2, with_substrate_tap=False, length=length[1], tie_layers=tie_layers2, sd_rmult=sd_rmult, **kwargs)
-    well = "pwell" if device == nmos else "nwell" 
+    well = "pwell" if device == nmos else "nwell"
+    sd_layer = "p+s/d" if device == nmos else "n+s/d"
     fet_1_ref = top_level << fet_1
-    fet_2_ref = top_level << fet_2 
+    fet_2_ref = top_level << fet_2
 
     #Relative move
     ref_dimensions = evaluate_bbox(fet_2)
     if placement == "horizontal":
-        fet_2_ref.movex(fet_1_ref.xmax + ref_dimensions[0]/2 + pdk.util_max_metal_seperation()-0.5)
+        # Legacy formula `metal_sep - 0.5` overlaps the two fet bboxes so their
+        # pwells merge. Trim the overlap slightly (-0.46 instead of -0.5) so the
+        # fets' inner S/D m2 finger contacts respect the strictest PDK m2
+        # spacing — gf180 M2.2a (0.28um). Sky130 m2 spacing (0.14um) is well
+        # under the resulting gap either way.
+        fet_2_ref.movex(fet_1_ref.xmax + ref_dimensions[0]/2 + pdk.util_max_metal_seperation()-0.46)
+        # The two fets' welltie tap-implant rings end up `2*well_enc - bbox_overlap`
+        # apart at their inner edges. On stricter PDKs (gf180 PP.2 = 0.4um) that
+        # gap trips a min-spacing rule. Bridge the implants with a thin rectangle
+        # so they merge into one polygon — geometrically inert (it sits inside
+        # the merged pwell, on top of existing tap diffusion area), DRC-clean.
+        well_enc = pdk.get_grule(well, "active_tap")["min_enclosure"]
+        fet1_pp_right = fet_1_ref.xmax - well_enc
+        fet2_pp_left = fet_2_ref.xmin + well_enc
+        if fet2_pp_left > fet1_pp_right:
+            bridge_x = (fet1_pp_right + fet2_pp_left) / 2
+            bridge_w = (fet2_pp_left - fet1_pp_right) + 0.04
+            bridge_h = (fet_1_ref.ymax - fet_1_ref.ymin) - 2 * well_enc
+            bridge_y = (fet_1_ref.ymax + fet_1_ref.ymin) / 2
+            bridge = top_level << rectangle(
+                size=(bridge_w, bridge_h),
+                layer=pdk.get_glayer(sd_layer),
+                centered=True,
+            )
+            bridge.movex(bridge_x).movey(bridge_y)
     if placement == "vertical":
         fet_2_ref.movey(fet_1_ref.ymin - ref_dimensions[1]/2 - pdk.util_max_metal_seperation()-1)
     
@@ -170,7 +248,10 @@ def  flipped_voltage_follower(
     top_level << c_route(pdk, drain_1_via.ports["top_met_S"], gate_2_via.ports["top_met_S"], extension=1.2*max(width[0],width[1]), cglayer="met2")
     top_level << straight_route(pdk, fet_2_ref.ports["multiplier_0_gate_E"], gate_2_via.ports["bottom_met_W"])
     try:
-        top_level << straight_route(pdk, fet_2_ref.ports["multiplier_0_source_W"], fet_2_ref.ports["tie_W_top_met_W"], glayer1=tie_layers2[1], width=0.2*sd_rmult, fullbottom=True)
+        # Use the PDK's own min_width for the tie route layer rather than a
+        # hardcoded 0.2um (gf180's met1 min_width is 0.23um, so 0.2 trips M1.1).
+        _tie_width = max(0.2 * sd_rmult, pdk.get_grule(tie_layers2[1])["min_width"])
+        top_level << straight_route(pdk, fet_2_ref.ports["multiplier_0_source_W"], fet_2_ref.ports["tie_W_top_met_W"], glayer1=tie_layers2[1], width=_tie_width, fullbottom=True)
     except:
         pass
     #Renaming Ports
@@ -199,7 +280,20 @@ def  flipped_voltage_follower(
         'nodes': netlist_obj.nodes,
         'source_netlist': netlist_obj.source_netlist
     }
-    
+
+    # gf180 LVS uses klayout's official deck which strictly requires named
+    # pin labels on met*_label layers. sky130 magic+netgen tolerates missing
+    # labels, so we only stamp them for gf180. Composite cells (LVCM, opamp)
+    # set GLAYOUT_NO_PIN_LABELS=1 around their sub-cell builds so the inner
+    # FVF labels don't leak into the parent cell's GDS and confuse top-level
+    # pin extraction.
+    import os
+    if pdk.name.lower() == "gf180" and not os.environ.get("GLAYOUT_NO_PIN_LABELS"):
+        try:
+            component = add_fvf_labels(component, pdk)
+        except KeyError:
+            pass
+
     return component
 
 if __name__=="__main__":

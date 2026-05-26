@@ -99,21 +99,40 @@ def fet_netlist(
     mtop = fingers * multipliers
     dmtop = multipliers
 
+    # Always emit X-prefix at the leaf — that's what sky130's magic+netgen
+    # tech setup expects (recognising X-instances of `sky130_fd_pr__nfet_01v8`
+    # / `sky130_fd_pr__pfet_01v8` via the netgen tech file). PDKs whose LVS
+    # deck classifies primitive MOSFETs by SPICE prefix instead (e.g.
+    # klayout's gf180mcu deck only auto-promotes M-prefix instances) have
+    # their netlist X→M-rewritten by the LVS runner before extraction —
+    # see :func:`tests.lvs.klayout_gf180._stage_inputs`. This keeps the
+    # generator output PDK-agnostic.
+    #
+    # DUM is exposed as a 5th port so the parent cell can decide where the
+    # dummies' tied G/S/D net lives. Parents that route the dummies to bulk
+    # in the layout (e.g. transmission_gate) map DUM→B; cells where the
+    # layout leaves them floating (e.g. diff_pair on gf180) map DUM to a
+    # shared local net so klayout's `combine_devices` collapses them into
+    # one extracted dummy. sky130 callers always map DUM to a tied node
+    # (typically B) since magic absorbs floating dummies into the bulk.
+    main_prefix = "XMAIN"
+    dum_prefix = "XDUMMY"
+
     source_netlist = """.subckt {circuit_name} {nodes} """ + f"l={ltop} w={wtop}"
 
     # Emit one explicit main device per effective finger instance.
     for i in range(mtop):
-        source_netlist += f"\nXMAIN{i+1} D G S B {{model}} l={ltop} w={wtop}"
+        source_netlist += f"\n{main_prefix}{i+1} D G S B {{model}} l={ltop} w={wtop}"
 
     # Emit one dummy device per side, per multiplier row.
     for i in range(num_dummies * dmtop):
-        source_netlist += f"\nXDUMMY{i+1} B B B B {{model}} l={ltop} w={wtop}"
+        source_netlist += f"\n{dum_prefix}{i+1} DUM DUM DUM B {{model}} l={ltop} w={wtop}"
 
     source_netlist += "\n.ends {circuit_name}"
 
     return Netlist(
         circuit_name=circuit_name,
-        nodes=['D', 'G', 'S', 'B'],
+        nodes=['D', 'G', 'S', 'B', 'DUM'],
         source_netlist=source_netlist,
         instance_format="X{name} {nodes} {circuit_name} l={length} w={width}",
         parameters={

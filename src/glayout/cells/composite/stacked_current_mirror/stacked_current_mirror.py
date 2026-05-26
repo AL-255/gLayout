@@ -20,7 +20,7 @@ from glayout.spice import Netlist
 
 
 @validate_arguments
-def stacked_nfet_current_mirror(pdk: MappedPDK, half_common_source_nbias: tuple[float, float, int, int], rmult: int, sd_route_left: bool) -> Component:
+def stacked_nfet_current_mirror(pdk: MappedPDK, half_common_source_nbias: tuple[float, float, int, int], rmult: int, sd_route_left: bool, sd_route_topmet: Optional[str] = "met2") -> Component:
     cmirror_output = nmos(
         pdk,
         width=half_common_source_nbias[0],
@@ -33,7 +33,8 @@ def stacked_nfet_current_mirror(pdk: MappedPDK, half_common_source_nbias: tuple[
         with_dummy=True,
         sd_route_left = sd_route_left,
         rmult=rmult,
-        tie_layers=("met2","met2")
+        tie_layers=("met2","met2"),
+        sd_route_topmet=sd_route_topmet,
     )
     cmirrorref = nmos(
         pdk,
@@ -47,7 +48,8 @@ def stacked_nfet_current_mirror(pdk: MappedPDK, half_common_source_nbias: tuple[
         with_dummy=True,
         sd_route_left = sd_route_left,
         rmult=rmult,
-        tie_layers=("met2","met2")
+        tie_layers=("met2","met2"),
+        sd_route_topmet=sd_route_topmet,
     )
     cmirrorref_ref = prec_ref_center(cmirrorref)
     cmirrorout_ref = prec_ref_center(cmirror_output)

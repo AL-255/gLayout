@@ -67,42 +67,53 @@ def add_two_int_labels(two_int_in: Component,
 
 
 def two_tran_interdigitized_netlist(
-    pdk: MappedPDK, 
+    pdk: MappedPDK,
     width: float,
     length: float,
     fingers: int,
-    multipliers: int, 
+    multipliers: int,
     with_dummy: True,
     n_or_p_fet: Optional[str] = 'nfet',
-    subckt_only: Optional[bool] = False
+    subckt_only: Optional[bool] = False,
+    dummies_tied_to_bulk: bool = True,
 ) -> Netlist:
     if length is None:
         length = pdk.get_grule('poly')['min_width']
     if width is None:
-        width = 3 
-    #mtop = multipliers if subckt_only else 1
-    #mtop=1
+        width = 3
     model = pdk.models[n_or_p_fet]
     mtop = fingers * multipliers
-    
+
+    # `dummies_tied_to_bulk` controls where the cmirror's dummies' G/S/D
+    # land. The standalone current_mirror cell adds a straight_route from
+    # the dummies' gsdcon to the welltie ring, so the layout extracts them
+    # on bulk (VB) — pass True (the default). When this same cmirror is
+    # built without that routing (e.g. via raw two_nfet_interdigitized in
+    # diff_pair_ibias / opamp's cs_bias), the layout leaves the dummies'
+    # G/S/D on a per-cmirror floating net; pass False so the schematic
+    # uses a local 'cmdum' net that --combine collapses to one device.
+    dum_node = "VB" if dummies_tied_to_bulk else "cmdum"
+    # X-prefix is sky130's magic+netgen tech expectation; klayout decks
+    # that classify primitive MOSFETs by SPICE prefix get their netlist
+    # X→M-rewritten by the LVS runner.
     source_netlist = """.subckt {circuit_name} {nodes} """ + f'l={length} w={width} m={1} '+ f"""
 XA VDD1 VG1 VSS1 VB {model} l={length} w={width} m={mtop}
 XB VDD2 VG2 VSS2 VB {model} l={length} w={width} m={mtop}"""
     if with_dummy:
-        source_netlist += f"\nXDUMMY VB VB VB VB {model} l={length} w={width} m={2}"
+        source_netlist += f"\nXDUMMY {dum_node} {dum_node} {dum_node} VB {model} l={length} w={width} m={2}"
     source_netlist += "\n.ends {circuit_name}"
 
     instance_format = "X{name} {nodes} {circuit_name} l={length} w={width} m={{1}}"
- 
+
     return Netlist(
         circuit_name='two_trans_interdigitized',
-        nodes=['VDD1', 'VDD2', 'VSS1', 'VSS2', 'VG1', 'VG2', 'VB'], 
+        nodes=['VDD1', 'VDD2', 'VSS1', 'VSS2', 'VG1', 'VG2', 'VB'],
         source_netlist=source_netlist,
         instance_format=instance_format,
         parameters={
             'model': model,
             'width': width,
-            'length': length,   
+            'length': length,
             'mult': multipliers
         }
     )
@@ -265,8 +276,8 @@ def two_nfet_interdigitized(
     base_multiplier.info["route_genid"] = "two_transistor_interdigitized"
 
     base_multiplier.info['netlist'] = two_tran_interdigitized_netlist(
-        pdk, 
-        width=kwargs.get('width', 3), length=kwargs.get('length', 0.15), fingers=kwargs.get('fingers', 1), multipliers=numcols, with_dummy=dummy,
+        pdk,
+        width=kwargs.get('width', 3), length=kwargs.get('length'), fingers=kwargs.get('fingers', 1), multipliers=numcols, with_dummy=dummy,
         n_or_p_fet="nfet",
         subckt_only=True
     )
@@ -350,8 +361,8 @@ def two_pfet_interdigitized(
     base_multiplier.info["route_genid"] = "two_transistor_interdigitized"
 
     base_multiplier.info['netlist'] = two_tran_interdigitized_netlist(
-        pdk, 
-        width=kwargs.get('width', 3), length=kwargs.get('length', 0.15), fingers=kwargs.get('fingers', 1), multipliers=numcols, with_dummy=dummy,
+        pdk,
+        width=kwargs.get('width', 3), length=kwargs.get('length'), fingers=kwargs.get('fingers', 1), multipliers=numcols, with_dummy=dummy,
         n_or_p_fet="pfet",
         subckt_only=True
     )

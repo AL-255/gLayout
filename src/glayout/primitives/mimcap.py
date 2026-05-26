@@ -127,6 +127,19 @@ def mimcap_array(pdk: MappedPDK, rows: int, columns: int, size: tuple[float,floa
 					port_pairs.append((bl_north_port,top_south_port,layer))
 	for port_pair in port_pairs:
 		mimcap_arr << straight_route(pdk,port_pair[0],port_pair[1],width=rmult*pdk.get_grule(port_pair[2])["min_width"])
+	# Cover the whole array on capmettop/capmetbottom with one solid plate
+	# (+0.4um pad past the array bbox) so klayout's huge-metal "ab" rules
+	# don't fire on the per-cap plate ↔ inter-cap-bridge boundaries: with
+	# the unified plate they all merge into one huge region.
+	arr_bbox = array_ref.bbox
+	pad = 0.4
+	xmin, ymin = float(arr_bbox[0][0]) - pad, float(arr_bbox[0][1]) - pad
+	xmax, ymax = float(arr_bbox[1][0]) + pad, float(arr_bbox[1][1]) + pad
+	plate = Component()
+	for level_layer in (capmettop, capmetbottom):
+		plate.add_polygon([(xmin,ymin),(xmax,ymin),(xmax,ymax),(xmin,ymax)],
+		                  layer=pdk.get_glayer(level_layer))
+	mimcap_arr << plate
 
 	# add netlist
 	mimcap_arr.info['netlist'] = __generate_mimcap_array_netlist(mimcap_single.info['netlist'], rows * columns)

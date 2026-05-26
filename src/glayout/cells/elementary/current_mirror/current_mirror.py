@@ -47,10 +47,14 @@ def add_cm_labels(cm_in: Component,
     vcopylabel.add_label(text="VOUT",layer=pdk.get_glayer("met2_label"))
     move_info.append((vcopylabel,cm_in.ports["fet_B_drain_N"],None))
     
-    # VB
+    # VB — center the label on the port (alignment ('c','c')) so the label
+    # box overlaps the welltie's met2 ring polygon. The default ('c','b')
+    # alignment lands the label OUTSIDE the south side of the ring (port
+    # faces south, so 'b' places the label below the port), which leaves it
+    # floating off any metal and the gf180 klayout deck can't bind it.
     vblabel = rectangle(layer=pdk.get_glayer("met2_pin"),size=(0.5,0.5),centered=True).copy()
     vblabel.add_label(text="B",layer=pdk.get_glayer("met2_label"))
-    move_info.append((vblabel,cm_in.ports["welltie_S_top_met_S"], None))
+    move_info.append((vblabel,cm_in.ports["welltie_S_top_met_S"], ('c','c')))
     
     # move everything to position
     for comp, prt, alignment in move_info:
@@ -64,13 +68,19 @@ def current_mirror_interdigitized_netlist(
     width: float,
     length: float,
     fingers: int,
-    multipliers: int, 
+    multipliers: int,
     with_dummy: bool = True,
     n_or_p_fet: Optional[str] = 'nfet',
-    subckt_only: Optional[bool] = False
+    subckt_only: Optional[bool] = False,
+    dummies_tied_to_bulk: bool = True,
 ) -> Netlist:
     """
-    Current mirror netlist built from a two-transistor interdigitized primitive
+    Current mirror netlist built from a two-transistor interdigitized primitive.
+
+    `dummies_tied_to_bulk` passes through to the underlying primitive netlist
+    so a composite parent that builds a cmirror via `two_nfet_interdigitized`
+    *without* the standalone-cell's dummy-to-welltie routing can opt out and
+    keep the dummies on a local floating net — see two_tran_interdigitized_netlist.
     """
 
     current_mirror_netlist = Netlist(circuit_name="CMIRROR", nodes=["VREF", "VOUT", "VSS", "B"])
@@ -84,6 +94,7 @@ def current_mirror_interdigitized_netlist(
             multipliers=multipliers,
             with_dummy=with_dummy,
             n_or_p_fet=n_or_p_fet,
+            dummies_tied_to_bulk=dummies_tied_to_bulk,
         ),
         [
             ("VDD1", "VREF"),   # reference drain
@@ -205,17 +216,31 @@ def current_mirror(
   
     top_level.add_ports(source_short.get_ports_list(), prefix='purposegndports')
 
+    # length default must be None (not 0.15) so the netlist function falls
+    # back to `pdk.get_grule('poly')['min_width']` — sky130=0.15, gf180=0.28.
+    # Hardcoding 0.15 produced an L mismatch (schematic 0.15 vs gf180 layout
+    # 0.28) that broke gf180 LVS.
     top_level.info["netlist"] = current_mirror_interdigitized_netlist(
         pdk=pdk,
         width=kwargs.get("width", 3),
-        length=kwargs.get("length", 0.15),
+        length=kwargs.get("length"),
         fingers=kwargs.get("fingers",1),
         multipliers=numcols,
         with_dummy=with_dummy,
         n_or_p_fet=device,
         subckt_only=True
     )
- 
+
+    # gf180 LVS uses klayout's official deck which strictly requires named
+    # pin labels on met*_label layers — without them, klayout extracts the
+    # cell with only an implicit substrate port and LVS fails. sky130 LVS
+    # via magic+netgen tolerates missing labels, so we only add them for
+    # gf180. Composite cells set GLAYOUT_NO_PIN_LABELS=1 around their sub-
+    # cell builds so inner labels don't leak into the parent cell's GDS.
+    import os
+    if pdk.name.lower() == "gf180" and with_tie and not os.environ.get("GLAYOUT_NO_PIN_LABELS"):
+        top_level = add_cm_labels(top_level, pdk)
+
     return top_level
 
 if __name__=="__main__":

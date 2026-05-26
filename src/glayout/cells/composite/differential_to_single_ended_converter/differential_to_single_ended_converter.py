@@ -28,7 +28,12 @@ def __create_sharedgatecomps(pdk: MappedPDK, rmult: int, half_pload: tuple[float
     # create the 2*2 multiplier transistors (placed twice later)
     twomultpcomps = Component("2 multiplier shared gate comps")
     pcompR = multiplier(pdk, "p+s/d", width=half_pload[0], length=half_pload[1], fingers=half_pload[2], dummy=True,rmult=rmult).copy()
-    tapref = pcompR << tapring(pdk, evaluate_bbox(pcompR,padding=0.3+pdk.get_grule("n+s/d", "active_tap")["min_enclosure"]),"n+s/d","met1","met1")
+    # Give the welltap an extra met1 min-separation on top of the original
+    # 0.3um pad — the multiplier's S/D extensions on met1 reach the bbox
+    # edge, and at gf180 rmult=1 they ended up flush against the welltap
+    # (M1.2a slivers).
+    _tap_pad = 0.3 + pdk.get_grule("n+s/d", "active_tap")["min_enclosure"] + pdk.get_grule("met1")["min_separation"]
+    tapref = pcompR << tapring(pdk, evaluate_bbox(pcompR,padding=_tap_pad),"n+s/d","met1","met1")
     pcompR.add_padding(layers=(pdk.get_glayer("nwell"),), default=pdk.get_grule("active_tap", "nwell")["min_enclosure"])
     pcompR.add_ports(tapref.get_ports_list(),prefix="welltap_")
     pcompR << straight_route(pdk,pcompR.ports["dummy_L_gsdcon_top_met_W"],pcompR.ports["welltap_W_top_met_W"],glayer2="met1")
@@ -95,6 +100,12 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
     shared_gate_comps << straight_route(pdk,LRdummyports[1],pbottom_AB.ports["R_welltap_N_top_met_S"],glayer2="met1")
     # connect p+s/d layer of the transistors
     shared_gate_comps << route_quad(LRplusdopedPorts[0],LRplusdopedPorts[-1],layer=pdk.get_glayer("p+s/d"))
+    # The 4 center multipliers leave 0.17um comp gaps between i=-2/i=-1 and
+    # between i=1/i=2 (gf180 DF.3a min comp space = 0.28um). All four are
+    # PCOMP-outside-nwell at the same psub potential, so the rule allows
+    # butting them — fill the gap with comp on the active_diff layer.
+    shared_gate_comps << route_quad(LRplusdopedPorts[1], LRplusdopedPorts[2], layer=pdk.get_glayer("active_diff"))
+    shared_gate_comps << route_quad(LRplusdopedPorts[5], LRplusdopedPorts[6], layer=pdk.get_glayer("active_diff"))
     # connect drain of the left 2 and right 2, short sources of all 4
     shared_gate_comps << route_quad(LRdrainsPorts[0],LRdrainsPorts[3],layer=LRdrainsPorts[0].layer)
     shared_gate_comps << route_quad(LRdrainsPorts[4],LRdrainsPorts[7],layer=LRdrainsPorts[0].layer)
@@ -139,13 +150,31 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
     pmos_bdrain_diffpair_v = align_comp_to_port(pmos_bdrain_diffpair_v, movex(pbottom_AB.ports["L_gate_S"].copy(),destination=via_location))
     pmos_bdrain_diffpair_v.movey(0-_max_metal_seperation_ps)
     pcomps_route_B_drain_extension = shared_gate_comps.xmax-ptop_AB.ports["R_drain_E"].center[0]+_max_metal_seperation_ps
-    shared_gate_comps << c_route(pdk, ptop_AB.ports["R_drain_E"], pmos_bdrain_diffpair_v.ports["bottom_met_E"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps)
-    shared_gate_comps << c_route(pdk, pbottom_AB.ports["L_drain_W"], pmos_bdrain_diffpair_v.ports["bottom_met_W"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps)
+    # Narrow these rails on gf180 — its tighter finger pitch puts the
+    # default-width (port-width) rails 0.1um apart, tripping M3.2a. sky130
+    # has wider pitch, so leave its rails at default to avoid via-enclosure
+    # gaps that show up as m1.2 when the rail is too thin.
+    _drain_w = 0.5 if pdk.name.lower() == "gf180" else None
+    shared_gate_comps << c_route(pdk, ptop_AB.ports["R_drain_E"], pmos_bdrain_diffpair_v.ports["bottom_met_E"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps, width1=_drain_w, width2=_drain_w)
+    shared_gate_comps << c_route(pdk, pbottom_AB.ports["L_drain_W"], pmos_bdrain_diffpair_v.ports["bottom_met_W"],extension=pcomps_route_B_drain_extension +_max_metal_seperation_ps, width1=_drain_w, width2=_drain_w)
     shared_gate_comps.add_ports(pmos_bdrain_diffpair_v.get_ports_list(),prefix="minusvia_")
     shared_gate_comps.add_ports(mimcap_connection_ref.get_ports_list(),prefix="mimcap_connection_")
     return shared_gate_comps
 
 def differential_to_single_ended_converter_netlist(pdk: MappedPDK, half_pload: tuple[float, float, int]) -> Netlist:
+    # Schematic structure matches OpenFASOC reference: PMOS bulks tied to VSS
+    # (no separate `B` top-level port).
+    #
+    # Layout-vs-schematic dummy accounting: the layout has 10 PMOS dummies
+    # that the OpenFASOC reference schematic did not model:
+    #   * 4 outer multipliers (pcompL/pcompR placed top + bottom) with
+    #     ``dummy=True``  -> 2 dummies each = 8 dummies on VSS
+    #   * 2 corner-center multipliers (i=-2 with [True,False] and i=+2 with
+    #     [False,True])    -> 1 dummy each   = 2 dummies on VSS
+    # All ten dummies sit in the n-well at VSS potential; Magic extracts each
+    # as a PMOS with D=G=S=B=VSS. Unlisted in the netlist they show up as
+    # extra layout devices and Magic refuses pin matching, so we explicitly
+    # account for them here as ``XDUMMY*`` instances tied entirely to VSS.
     return Netlist(
         circuit_name="DIFF_TO_SINGLE",
         nodes=['VIN', 'VOUT', 'VSS', 'VSS2'],
@@ -154,6 +183,16 @@ XTOP1 V1   VIN VSS  VSS {model} l={{l}} w={{w}} m={{mt}}
 XTOP2 VSS2 VIN VSS  VSS {model} l={{l}} w={{w}} m={{mt}}
 XBOT1 VIN  VIN V1   VSS {model} l={{l}} w={{w}} m={{mb}}
 XBOT2 VOUT VIN VSS2 VSS {model} l={{l}} w={{w}} m={{mb}}
+XDUMMY1  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY2  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY3  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY4  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY5  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY6  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY7  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY8  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY9  VSS VSS VSS VSS {model} l={{l}} w={{w}}
+XDUMMY10 VSS VSS VSS VSS {model} l={{l}} w={{w}}
 .ends {circuit_name}""",
         instance_format="X{name} {nodes} {circuit_name} l={length} w={width} mt={mult_top} mb={mult_bot}",
         parameters={
@@ -170,6 +209,14 @@ def differential_to_single_ended_converter(pdk: MappedPDK, rmult: int, half_ploa
     pmos_comps, ptop_AB, pbottom_AB, LRplusdopedPorts, LRgatePorts, LRdrainsPorts, LRsourcesPorts, LRdummyports = __create_sharedgatecomps(pdk, rmult,half_pload)
     clear_cache()
     pmos_comps = __route_sharedgatecomps(pdk, pmos_comps, via_xlocation, ptop_AB, pbottom_AB, LRplusdopedPorts, LRgatePorts, LRdrainsPorts, LRsourcesPorts, LRdummyports)
+
+    # Intentionally no pin labels: dse is exercised only through opamp at
+    # this point (it is on the LVS skip list because Magic mis-extracts its
+    # PMOS bulks). Adding labels named VSS/VOUT/VIN/VSS2 here would collide
+    # with opamp's top-level labels at the SAME text — e.g. dse_VSS lands on
+    # the gain-stage's VDD net, and dpiibias also emits a "VSS" label on the
+    # real GND, so Magic would (correctly) report "VSS and VDD electrically
+    # shorted" purely as a name collision, not a real short.
 
     pmos_comps.info['netlist'] = differential_to_single_ended_converter_netlist(pdk, half_pload)
 

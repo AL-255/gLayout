@@ -797,46 +797,35 @@ custom_drc_save_report $::env(DESIGN_NAME) $::env(REPORTS_DIR)/$::env(DESIGN_NAM
             write_spice(str(netlist_from_comp), str(spice_path), lvsschemref_file)
             
             magic_script_content = f"""
-drc off            
+drc off
 gds flatglob *\\$\\$*
 gds read {gds_path}
 
-# LVS Netlist
+# LVS Netlist — extract transistors only. Skipping ext2resist/extresist on
+# the lvsmag output keeps long routes from showing up as thousands of
+# parasitic resistors that the schematic does not model (e.g. opamp's
+# 7000+ r:N instances would otherwise swamp the comparison).
 load {design_name}
 select top cell
 
 extract all
-ext2resist all
 
 ext2spice lvs
-ext2spice extresist on
+# Force the top cell to be wrapped in a `.subckt {{design_name}}` block.
+# Without this, magic emits the top circuit as flat top-level cards, and
+# netgen reports `Cannot find cell {{design_name}}` when given the file —
+# which silently aborts before any report is written. See diff_to_single
+# / transmission_gate ERRORs.
+ext2spice subcircuit top on
 ext2spice -o {str(lvsmag_path)}
-
-# Sim Netlist
-load {design_name}
-extract all
-ext2sim cthresh 0
-ext2sim -o {str(sim_path)}
-
-# Pex Netlist
-flatten {design_name}
-load {design_name}
-select top cell
-
-extract do local
-extract all
-
-ext2sim labels on
-ext2sim
-extresist tolerance 10
-extresist
-
-ext2spice lvs
-ext2spice cthresh 0
-ext2spice extresist on
-ext2spice -o {str(pex_path)}
 exit
 """
+            # The sim/pex netlists are only consumed by copy_intermediate_files
+            # below. Running their extract/extresist passes on large designs
+            # (opamp, diff_to_single) caused magic state to corrupt the
+            # already-written lvsmag.spice for the next cell in some setups —
+            # producing the "netgen::readnet -1" symptom. Skip them here; the
+            # copy step is now tolerant of missing intermediate files.
             if show_scripts:
                 print("Creating magic script for LVS...")
                 # Print the magic script content to the terminal instead of writing to a file
@@ -855,11 +844,18 @@ exit
                 
                 magicrc_file = self.pdk_files['magic_drc_file'] if magic_drc_file is None else magic_drc_file
                 magic_cmd = f"bash -c 'magic -rcfile {magicrc_file} -noconsole -dnull < {magic_script_path}'",
+                # Run magic with CWD pinned to the temp directory. Magic
+                # writes per-cell ``<sub_cell>.ext`` files to its current
+                # working directory; if multiple LVS runs happen in
+                # parallel from a shared CWD they race on those files and
+                # the resulting lvsmag.spice can be silently truncated /
+                # corrupted (netgen then aborts with "netgen::readnet -1").
                 magic_subproc = subprocess.run(
-                    magic_cmd, 
+                    magic_cmd,
                     shell=True,
                     check=True,
-                    capture_output=True
+                    capture_output=True,
+                    cwd=str(temp_dir_path),
                 )
                 
                 magic_subproc_code = magic_subproc.returncode
@@ -910,14 +906,16 @@ exit
                 # else:
                 #     raise ValueError("LVS run failed")
             
-            finally: 
+            finally:
                 os.remove(magic_script_path)
-                if os.path.exists(f'{design_name}.ext'):
-                    os.remove(f'{design_name}.ext')
-                # remove all files with suffix .ext
-                for file in os.listdir(temp_dir_path):
-                    if file.endswith(".ext"):
-                        os.remove(file)
+                # Magic now runs with cwd=temp_dir_path, so its per-cell
+                # ``.ext`` files land inside temp_dir and are cleaned up
+                # automatically when the TemporaryDirectory exits. Still
+                # tidy up any stragglers a caller created in the process
+                # CWD before this fix.
+                stray = Path(f'{design_name}.ext')
+                if stray.is_file():
+                    stray.unlink()
                 # copy the report from the temp directory to the specified location
                 
                 if output_file_path is not None:
@@ -928,8 +926,12 @@ exit
                         path_to_dir.mkdir(parents=True, exist_ok=False)
                     #new_output_file_path = path_to_dir / output_file_path
                     new_output_file_path = path_to_dir / Path(report_path).name
-                    # Overwrite the report file if it exists
-                    shutil.copy(report_path, new_output_file_path)
+                    # Overwrite the report file if it exists. When the run
+                    # failed before the report was written, leave the
+                    # original exception (raised in the try block) intact
+                    # rather than masking it with a FileNotFoundError here.
+                    if Path(report_path).is_file():
+                        shutil.copy(report_path, new_output_file_path)
                     # if not new_output_file_path.exists():
                     #     shutil.copy(report_path, path_to_dir / output_file_path)
                     # else: 
@@ -939,9 +941,13 @@ exit
                         lvsmag_dest = path_to_dir / f"{design_name}_lvsmag.spice"
                         sim_dest    = path_to_dir / f"{design_name}_sim.spice"
                         pex_dest    = path_to_dir / f"{design_name}_pex.spice"
-                        shutil.copy(lvsmag_path, lvsmag_dest)
-                        shutil.copy(sim_path, sim_dest)
-                        shutil.copy(pex_path, pex_dest)
+                        for src, dst in (
+                            (lvsmag_path, lvsmag_dest),
+                            (sim_path, sim_dest),
+                            (pex_path, pex_dest),
+                        ):
+                            if Path(src).is_file():
+                                shutil.copy(src, dst)
                         print(f"Copied intermediate files to {path_to_dir}")
                         # shutil.copy(lvsmag_path, str(Path.cwd() / f"{design_name}_lvsmag.spice"))  
                         # shutil.copy(sim_path, str(Path.cwd() / f"{design_name}_sim.spice"))

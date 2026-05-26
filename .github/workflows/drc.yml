@@ -1,0 +1,148 @@
+name: Cell DRC
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch — pushing N commits in a row
+# shouldn't keep N CI runs going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drc:
+    name: DRC (${{ matrix.pdk }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    # iic-osic-tools ships klayout, magic, netgen, and the sky130A / gf180mcuD
+    # PDKs pre-installed under /foss/pdks. The image is Ubuntu 24.04 with only
+    # Python 3.12, but glayout pins gdsfactory<=7.7.0 / numpy<=1.24, so we
+    # install Python 3.10 via uv (python-build-standalone, hosted on GitHub
+    # releases) and run glayout in a venv. We previously used the deadsnakes
+    # PPA but ppa.launchpadcontent.net was too flaky for CI.
+    #
+    # See https://github.com/iic-jku/iic-osic-tools.
+    container:
+      image: hpretl/iic-osic-tools:latest
+      options: --user root
+      # The image's entrypoint launches a UI manager; bypass it.
+      env:
+        PDK_ROOT: /foss/pdks
+        DEBIAN_FRONTEND: noninteractive
+        PYTHONUNBUFFERED: "1"
+        # The image sets PYTHONPATH to its 3.12 site-packages, which breaks
+        # python3.10 if inherited.
+        PYTHONPATH: ""
+        # GitHub Actions overrides the image's ENTRYPOINT with `tail -f`, so
+        # the iic-osic-tools entrypoint that normally enriches PATH with
+        # /foss/tools/{bin,klayout,...} never runs. Set it explicitly here
+        # so klayout/magic/etc. are on PATH for every step.
+        PATH: /foss/tools/bin:/foss/tools/sak:/foss/tools/kactus2:/foss/tools/klayout:/foss/tools/osic-multitool:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    strategy:
+      fail-fast: false
+      matrix:
+        pdk: [sky130, gf180]
+
+    # The iic-osic-tools image's default container shell is dash (`sh`), so
+    # `set -o pipefail` blows up. Force bash for every `run:` step.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache uv + CPython 3.10
+        id: cache-uv
+        uses: actions/cache@v4
+        with:
+          # iic-osic-tools sets HOME=/headless even when running as root, so
+          # uv installs land here regardless of who launched the container.
+          path: |
+            /headless/.local/bin/uv
+            /headless/.local/bin/uvx
+            /headless/.local/share/uv
+          key: uv-py310-${{ runner.os }}-v1
+
+      - name: Install Python 3.10 (uv)
+        run: |
+          set -euxo pipefail
+          # uv installs CPython from python-build-standalone (GitHub releases),
+          # bypassing launchpad PPAs entirely. Skip the curl install when the
+          # cache already restored uv. `uv python install 3.10` is idempotent
+          # (no-op if 3.10 is already present in $UV_PYTHON_INSTALL_DIR).
+          if [ ! -x "$HOME/.local/bin/uv" ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.10
+          # Resolve the absolute path so later steps don't depend on PATH.
+          echo "PYTHON310=$(uv python find 3.10)" >> "$GITHUB_ENV"
+
+      - name: Show tool versions
+        run: |
+          set -euxo pipefail
+          klayout -v
+          "$PYTHON310" --version
+          ls "$PDK_ROOT"
+
+      - name: Cache python venv
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.venv
+          # Bust the cache when setup.py changes (deps) or the bundled DRC
+          # decks change (paths embedded in glayout's editable install).
+          # v2 = switched interpreter from deadsnakes to uv; venvs cached under
+          # v1 symlink to a now-absent /usr/bin/python3.10.
+          key: drc-venv-py310-${{ runner.os }}-${{ hashFiles('setup.py', 'src/glayout/**/*.py') }}-v2
+          restore-keys: |
+            drc-venv-py310-${{ runner.os }}-
+
+      - name: Create venv and install glayout (cache miss)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          rm -rf "$GITHUB_WORKSPACE/.venv"
+          "$PYTHON310" -m venv "$GITHUB_WORKSPACE/.venv"
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          # uv pip install is ~3-5x faster than pip for cold installs and
+          # picks up $VIRTUAL_ENV automatically after `activate`.
+          uv pip install -e .
+
+      # No "refresh editable install" step on cache hit: glayout's .pth points
+      # to $GITHUB_WORKSPACE which is stable across runs, so the restored venv
+      # imports the freshly checked-out source as-is.
+
+      - name: Run cell DRC
+        run: |
+          set -euxo pipefail
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          python tests/drc/run_cell_drc.py \
+            --pdk ${{ matrix.pdk }} \
+            --out-dir drc_results/${{ matrix.pdk }}
+
+      - name: Upload DRC artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drc-${{ matrix.pdk }}
+          path: drc_results/${{ matrix.pdk }}
+          retention-days: 14
+
+      - name: Publish JUnit summary
+        # Skip when junit.xml wasn't produced (e.g. setup died before the
+        # runner could write it) — otherwise the publisher emits a misleading
+        # second red check on top of the real failure.
+        if: ${{ always() && hashFiles(format('drc_results/{0}/junit.xml', matrix.pdk)) != '' }}
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: drc_results/${{ matrix.pdk }}/junit.xml
+          check_name: DRC report (${{ matrix.pdk }})
+          require_tests: true
