@@ -1,12 +1,7 @@
 from pydantic import validate_arguments
-from gdsfactory.snap import snap_to_grid
-from gdsfactory.typings import Component, ComponentReference
-from gdsfactory.components.rectangle import rectangle
-from gdsfactory.port import Port
+from glayout.backend import Component, ComponentReference, Port, rectangle, snap_to_grid, transformed
 from typing import Callable, Union, Optional, Iterable
 from decimal import Decimal
-from gdsfactory.functions import transformed
-from gdsfactory.functions import move as __gf_move
 from glayout.pdk.mappedpdk import MappedPDK
 from gdstk import rectangle as primitive_rectangle
 from .port_utils import add_ports_perimeter, rename_ports_by_list, parse_direction

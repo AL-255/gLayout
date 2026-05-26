@@ -1,6 +1,4 @@
-from gdsfactory.cell import cell
-from gdsfactory.component import Component
-from gdsfactory.components.rectangle import rectangle
+from glayout.backend import Component, cell, rectangle
 from glayout.pdk.mappedpdk import MappedPDK
 from typing import Optional
 from glayout.primitives.via_gen import via_array

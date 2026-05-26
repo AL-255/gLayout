@@ -6,7 +6,7 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from gdsfactory.typings import Component
+from glayout.backend import Component
 
 # Make run_pex.sh executable if it exists
 _evaluator_box_dir = Path(__file__).parent

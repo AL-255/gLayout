@@ -5,10 +5,7 @@ Geometry utility functions for Glayout.
 from typing import Optional, Union, Tuple, List
 from pathlib import Path
 
-from gdsfactory import cell
-from gdsfactory.component import Component
-from gdsfactory import ComponentReference as Reference
-from gdsfactory.typings import Layer, ComponentOrReference
+from glayout.backend import Component, ComponentOrReference, ComponentReference as Reference, Layer, cell
 from pydantic import validate_arguments
 
 from ..pdk.mappedpdk import MappedPDK

@@ -7,7 +7,7 @@ import tempfile
 import sys
 from pathlib import Path
 from glayout import MappedPDK, sky130,gf180
-from gdsfactory.typings import Component
+from glayout.backend import Component
 
 def parse_drc_report(report_content: str) -> dict:
     """

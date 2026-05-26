@@ -7,12 +7,10 @@ from glayout.spice.netlist import Netlist
 from glayout.primitives.fet import nmos, pmos
 from glayout.primitives.guardring import tapring
 from glayout.util.port_utils import add_ports_perimeter,rename_ports_by_orientation
-from gdsfactory.component import Component
-from gdsfactory.cell import cell
+from glayout.backend import Component, cell, rectangle
 from glayout.util.comp_utils import evaluate_bbox, prec_center, prec_ref_center, align_comp_to_port
 from typing import Optional, Union 
 from glayout.primitives.via_gen import via_stack
-from gdsfactory.components import text_freetype, rectangle
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
 try:
     from glayout.verification.evaluator_wrapper import run_evaluation

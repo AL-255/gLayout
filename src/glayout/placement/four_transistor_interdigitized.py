@@ -5,12 +5,10 @@
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.placement.two_transistor_interdigitized import two_nfet_interdigitized, two_pfet_interdigitized
 from typing import Literal, Optional
-from gdsfactory import Component
-from gdsfactory.component_reference import ComponentReference
+from glayout.backend import Component, ComponentReference, rectangle
 from glayout.util.comp_utils import evaluate_bbox, movey, align_comp_to_port
 from glayout.primitives.guardring import tapring
 from glayout.spice.netlist import Netlist
-from gdsfactory.components import text_freetype, rectangle
 from glayout.primitives.via_gen import via_stack
 
 #two seperate bulk nodes

@@ -6,8 +6,7 @@ from glayout.routing.smart_route import smart_route
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.primitives.guardring import tapring
 from glayout.util.comp_utils import evaluate_bbox, add_ports_perimeter
-from gdsfactory.component import Component
-from gdsfactory.cell import cell 
+from glayout.backend import Component, cell
 from typing import Optional
 from glayout import sky130
 from glayout.spice import Netlist

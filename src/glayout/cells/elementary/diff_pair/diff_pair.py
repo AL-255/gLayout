@@ -1,10 +1,6 @@
 from typing import Optional, Union
 
-from gdsfactory.cell import cell
-from gdsfactory.component import Component, copy
-from gdsfactory.components.rectangle import rectangle
-from gdsfactory.routing.route_quad import route_quad
-from gdsfactory.routing.route_sharp import route_sharp
+from glayout.backend import Component, cell, copy, rectangle, route_quad
 from glayout.pdk.mappedpdk import MappedPDK
 from glayout.util.comp_utils import align_comp_to_port, evaluate_bbox, movex, movey
 from glayout.util.port_utils import (
@@ -25,7 +21,6 @@ from glayout.routing.smart_route import smart_route
 from glayout.routing.straight_route import straight_route
 from glayout.spice import Netlist
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
-from gdsfactory.components import text_freetype
 try:
     from glayout.verification.evaluator_wrapper import run_evaluation
 except ImportError:

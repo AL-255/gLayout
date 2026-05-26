@@ -1,21 +1,18 @@
 from glayout.pdk.mappedpdk import MappedPDK
 from pydantic import validate_arguments
-from gdsfactory.component import Component
+from glayout.backend import Component, clear_cache, rectangle, transformed
 from glayout.primitives.fet import nmos, pmos, multiplier
 from glayout.util.comp_utils import evaluate_bbox
 from typing import Literal, Union
 from glayout.util.port_utils import rename_ports_by_orientation, rename_ports_by_list, create_private_ports
 from glayout.util.comp_utils import prec_ref_center,evaluate_bbox, prec_center, align_comp_to_port
 from glayout.routing.straight_route import straight_route
-from gdsfactory.functions import transformed
 from glayout.primitives.guardring import tapring
 from glayout.util.port_utils import add_ports_perimeter
-from gdsfactory.cell import clear_cache
 from typing import Literal, Optional, Union
 from glayout.pdk.sky130_mapped import sky130_mapped_pdk
 from glayout.pdk.gf180_mapped import gf180_mapped_pdk
 from glayout.spice.netlist import Netlist
-from gdsfactory.components import text_freetype, rectangle
 from glayout.primitives.via_gen import via_stack
 #from glayout.placement.two_transistor_interdigitized import two_nfet_interdigitized; from glayout.pdk.sky130_mapped import sky130_mapped_pdk as pdk; biasParams=[6,2,4]; rmult=2
 def add_two_int_labels(two_int_in: Component,

@@ -1,10 +1,7 @@
-from gdsfactory.cell import cell
-from gdsfactory.component import Component
-from gdsfactory.port import Port
+from glayout.backend import Component, Port, cell, rectangle
 from glayout.pdk.mappedpdk import MappedPDK
 from typing import Optional
 from glayout.primitives.via_gen import via_stack, via_array
-from gdsfactory.components.rectangle import rectangle
 from glayout.util.comp_utils import evaluate_bbox, align_comp_to_port
 from glayout.util.port_utils import assert_port_manhattan, set_port_orientation, add_ports_perimeter
 from gdstk import rectangle as primitive_rectangle

@@ -1,6 +1,4 @@
-from gdsfactory.component import Component
-from gdsfactory.polygon import Polygon
-from gdsfactory.geometry.boolean import boolean
+from glayout.backend import Component, Polygon, boolean
 
 
 def sky130_add_npc(comp: Component) -> Component:

@@ -1,4 +1,4 @@
-from gdsfactory.typings import Component
+from glayout.backend import Component
 from pydantic import validate_arguments
 
 
