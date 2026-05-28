@@ -54,6 +54,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check that notebook outputs are cleared
+        # Fail fast (sub-second, stdlib-only) before the multi-minute
+        # nbconvert pass. Catches PRs that ship notebooks with stale outputs
+        # — those bloat the diff and defeat the cleared-outputs convention
+        # the repo settled on in PR #89.
+        run: python3 tests/notebooks/check_outputs_cleared.py
+
       - name: Cache uv + CPython 3.10
         id: cache-uv
         uses: actions/cache@v4
