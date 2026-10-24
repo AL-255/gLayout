@@ -134,6 +134,11 @@ def diff_pair(
 	n_or_p_fet = if true the diffpair is made of nfets else it is made of pfets
 	substrate_tap: if true place a tapring around the diffpair (connects on met1)
 	"""
+	if pdk.finfet is not None:
+		from glayout.placement.finfet_circuit import finfet_circuit
+		fn = nmos if n_or_p_fet else pmos
+		fet = fn(pdk,width=width,length=length,fingers=fingers)
+		return finfet_circuit(pdk,diff_pair_netlist(fet,fet,pdk,dum_net,substrate_tap))
 	# TODO: error checking
 	pdk.activate()
 	diffpair = Component()

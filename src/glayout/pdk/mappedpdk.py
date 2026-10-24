@@ -239,6 +239,11 @@ class MappedPDK(Pdk):
     present"""
 
     valid_glayers: ClassVar[tuple[str]] = (
+        "fin",
+        "gcut",
+        "sdt",
+        "lig",
+        "lisd",
         "dnwell",
         "pwell",
         "nwell",
@@ -281,6 +286,21 @@ class MappedPDK(Pdk):
         #"nwell_label",
         #"pwell_label",
     )
+
+    finfet: Optional[Any] = None
+
+    @validator("finfet")
+    def finfet_check(cls, technology):
+        from glayout.pdk.finfet import FinFETTechnology
+        if technology is not None and not isinstance(technology, FinFETTechnology):
+            raise ValueError("finfet must be a FinFETTechnology")
+        return technology
+
+    def activate(self):
+        super().activate()
+        from glayout.pdk.finfet import activate_grid, install_export_guard
+        activate_grid(self.finfet)
+        install_export_guard(Component)
 
     models: dict = {
         "nfet": "",

@@ -136,6 +136,13 @@ def current_mirror(
     Returns:
         Component: a current mirror component object
     """
+    if pdk.finfet is not None:
+        from glayout.placement.finfet_circuit import finfet_circuit
+        netlist = current_mirror_interdigitized_netlist(
+            pdk, width=kwargs.get('width',3), length=kwargs.get('length'),
+            fingers=kwargs.get('fingers',1), multipliers=numcols,
+            with_dummy=with_dummy, n_or_p_fet=device)
+        return finfet_circuit(pdk,netlist)
     top_level = Component("current mirror")
     if device in ['nmos', 'nfet']:
         interdigitized_fets = two_nfet_interdigitized(

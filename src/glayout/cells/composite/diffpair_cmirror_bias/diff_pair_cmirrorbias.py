@@ -82,6 +82,14 @@ def diff_pair_ibias(
     with_antenna_diode_on_diffinputs: int = 0,
 ) -> Component:
     # create and center diffpair
+    if pdk.finfet is not None:
+        from glayout.placement.finfet_circuit import finfet_circuit
+        if with_antenna_diode_on_diffinputs:
+            raise NotImplementedError('FinFET antenna diodes need an isolated bulk')
+        dp = diff_pair(pdk,width=half_diffpair_params[0],length=half_diffpair_params[1],fingers=half_diffpair_params[2])
+        from glayout.cells.elementary.current_mirror.current_mirror import current_mirror
+        cm = current_mirror(pdk,width=diffpair_bias[0],length=diffpair_bias[1],numcols=diffpair_bias[2])
+        return finfet_circuit(pdk,diff_pair_ibias_netlist(dp,cm))
     diffpair_i_ = Component("temp diffpair and current source")
     # `dum_net='B'` overrides the standalone gf180 diff_pair convention
     # (which puts dummies on a local floating 'dum' net): inside this

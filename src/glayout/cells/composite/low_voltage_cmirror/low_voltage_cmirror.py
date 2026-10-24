@@ -121,6 +121,12 @@ def  low_voltage_cmirror(
     A low voltage N type current mirror. It has two input brnaches and two output branches. It consists of total 8 nfets, 7 of them have the same W/L. One nfet has width of w' = w/3(theoretcially)
     The default values are used to mirror 10uA.
     """
+    if pdk.finfet is not None:
+        from glayout.placement.finfet_circuit import finfet_circuit
+        cascode=flipped_voltage_follower(pdk,width=(width[0],width[0]),length=(length,length),fingers=(fingers[0],fingers[0]),multipliers=(multipliers[0],multipliers[0]))
+        bias=flipped_voltage_follower(pdk,width=width,length=(length,length),fingers=fingers,multipliers=multipliers)
+        fet=nmos(pdk,width=width[0],length=length,fingers=fingers[0],multipliers=multipliers[0])
+        return finfet_circuit(pdk,low_voltage_cmirr_netlist(bias,cascode,fet,fet,fet,fet))
     #top level component
     top_level = Component("Low_voltage_N-type_current_mirror")
 

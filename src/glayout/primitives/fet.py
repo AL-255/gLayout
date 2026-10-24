@@ -137,6 +137,12 @@ def fet_netlist(
     finger/multiplier and one explicit dummy device per row/side instead of
     relying on `m`.
     """
+    if pdk.finfet is not None:
+        from glayout.primitives.finfet import finfet_netlist
+        device = 'nfet' if model == pdk.models['nfet'] else 'pfet'
+        if length is not None and abs(length-pdk.finfet.gate_length)>1e-10:
+            raise ValueError('unsupported FinFET gate length')
+        return finfet_netlist(pdk, device, pdk.finfet.fin_count(width), fingers, multipliers)
     # add spice netlist
     num_dummies = 0
     if with_dummy == False or with_dummy == (False, False):
@@ -471,7 +477,8 @@ def nmos(
     interfinger_rmult: int=1,
     tie_layers: tuple[str,str] = ("met2","met1"),
     substrate_tap_layers: tuple[str,str] = ("met2","met1"),
-    dummy_routes: bool=True
+    dummy_routes: bool=True,
+    nfin: Optional[int] = None
 ) -> Component:
     """Generic NMOS generator
     pdk: mapped pdk to use
@@ -495,6 +502,12 @@ def nmos(
     substrate_tap_layers: tuple[str,str] specifying (horizontal glayer, vertical glayer) or substrate tap ring. default=("met2","met1")
     dummy_routes: bool default=True, if true add add vias and short dummy poly,source,drain
     """
+    if pdk.finfet is not None:
+        from glayout.primitives.finfet import finfet
+        return finfet(pdk, device='nfet', width=width, nfin=nfin,
+                      length=length, fingers=fingers, multipliers=multipliers,
+                      with_dummy=with_dummy, sd_route_topmet=sd_route_topmet,
+                      gate_route_topmet=gate_route_topmet)
     # TODO: glayer checks
     pdk.activate()
     nfet = Component()
@@ -616,7 +629,8 @@ def pmos(
     interfinger_rmult: int=1,
     tie_layers: tuple[str,str] = ("met2","met1"),
     substrate_tap_layers: tuple[str,str] = ("met2","met1"),
-    dummy_routes: bool=True
+    dummy_routes: bool=True,
+    nfin: Optional[int] = None
 ) -> Component:
     """Generic PMOS generator
     pdk: mapped pdk to use
@@ -640,6 +654,12 @@ def pmos(
     substrate_tap_layers: tuple[str,str] specifying (horizontal glayer, vertical glayer) or substrate tap ring. default=("met2","met1")
     dummy_routes: bool default=True, if true add add vias and short dummy poly,source,drain
     """
+    if pdk.finfet is not None:
+        from glayout.primitives.finfet import finfet
+        return finfet(pdk, device='pfet', width=width, nfin=nfin,
+                      length=length, fingers=fingers, multipliers=multipliers,
+                      with_dummy=with_dummy, sd_route_topmet=sd_route_topmet,
+                      gate_route_topmet=gate_route_topmet)
     # TODO: glayer checks
     pdk.activate()
     pfet = Component()

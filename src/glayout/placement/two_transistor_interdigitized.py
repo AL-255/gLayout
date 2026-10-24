@@ -74,6 +74,13 @@ def two_tran_interdigitized_netlist(
     subckt_only: Optional[bool] = False,
     dummies_tied_to_bulk: bool = True,
 ) -> Netlist:
+    if pdk.finfet is not None:
+        from glayout.primitives.finfet import finfet_netlist
+        nl=Netlist(circuit_name='two_trans_interdigitized',nodes=['VDD1','VDD2','VSS1','VSS2','VG1','VG2','VB'])
+        leaf=finfet_netlist(pdk,n_or_p_fet,pdk.finfet.fin_count(width),fingers,multipliers)
+        for suffix in ('1','2'):
+            nl.connect_netlist(leaf,[('D','VDD'+suffix),('G','VG'+suffix),('S','VSS'+suffix),('B','VB'),('DUM','VB')])
+        return nl
     if length is None:
         length = pdk.get_grule('poly')['min_width']
     if width is None:

@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUNDLED_DECKS = {
+    "asap7": REPO_ROOT / "src/glayout/pdk/asap7_mapped/verification.py",
     "sky130": REPO_ROOT / "src" / "glayout" / "pdk" / "sky130_mapped" / "sky130.lydrc",
     "gf180":  REPO_ROOT / "src" / "glayout" / "pdk" / "gf180_mapped" / "gf180mcu.drc",
 }
@@ -123,6 +124,9 @@ def _load_cell_specs(pdk: str, param_csv: Optional[Path]) -> Dict[str, CellSpec]
 
 
 def _resolve_pdk(pdk_name: str):
+    if pdk_name == "asap7":
+        from glayout import asap7
+        return asap7
     if pdk_name == "sky130":
         from glayout import sky130
         if sky130 is None:
@@ -348,6 +352,18 @@ def _run_one_cell(item: dict) -> dict:
         print(f"[ERROR] {name}: build failed\n{result['trace']}", flush=True)
         return result
 
+    if pdk_name == 'asap7':
+        from glayout.pdk.asap7_mapped.verification import drc
+        errors=drc(gds_path)
+        report=rpt_path.with_suffix('.json')
+        report.write_text(json.dumps({'scope':'ASAP7 POC rule subset','violations':errors},indent=2))
+        result.update(status='fail' if errors else 'pass',
+                      message=f'ASAP7 POC DRC: {sum(errors.values())} violations',
+                      violations=errors,report=str(report.relative_to(out_dir)),
+                      gds=str(gds_path.relative_to(out_dir)))
+        print(f"[{result['status'].upper()}] {name}: {result['message']}",flush=True)
+        return result
+
     engines = item.get("engines") or ["klayout"]
     engine_results: Dict[str, Dict[str, Any]] = {}
 
@@ -437,7 +453,7 @@ def _write_junit(results: List[dict], pdk: str, out: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdk", required=True, choices=["sky130", "gf180"])
+    parser.add_argument("--pdk", required=True, choices=["sky130", "gf180", "asap7"])
     parser.add_argument("--out-dir", default="drc_results")
     parser.add_argument(
         "--cells",
@@ -465,6 +481,8 @@ def main() -> int:
         help="DRC engine(s) to run per cell. 'both' runs klayout and magic in sequence per worker.",
     )
     args = parser.parse_args()
+    if args.pdk == "asap7" and args.engine != "klayout":
+        parser.error("ASAP7 POC verification uses the KLayout Python engine")
     engines = ["klayout", "magic"] if args.engine == "both" else [args.engine]
 
     out_dir = Path(args.out_dir).resolve()
