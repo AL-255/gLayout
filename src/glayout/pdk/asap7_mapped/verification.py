@@ -87,8 +87,8 @@ def drc(path, topcell=None):
     lisd = minimum(17, "LISD", 0.024, 0.018, 0.000648)
     lig = minimum(16, "LIG", 0.016, 0.018, 0.000324)
     for polygon in lig.interacting(gate).each():
-        overlap=(k.Region(polygon)&gate).area()*dbu*dbu
-        add('LIG.GATE.A.3',overlap<0.000320-1e-12)
+        overlap = (k.Region(polygon) & gate).area() * dbu * dbu
+        add("LIG.GATE.A.3", overlap < 0.000320 - 1e-12)
     add("SDT.GATE.AUX.1", sdt & gate)
     add("SDT.LISD.AUX.4", sdt - lisd)
     add("SDT.ACTIVE.AUX.3", sdt.not_interacting(active))
@@ -123,8 +123,12 @@ def lvs(gds, spice, output_dir, topcell=None):
     out.mkdir(parents=True, exist_ok=True)
     l2n = k.LayoutToNetlist(k.RecursiveShapeIterator(layout, top, []))
 
+    layer_cache = {}
+
     def layer(number):
-        return l2n.make_layer(layout.layer(number, 0), str(number))
+        if number not in layer_cache:
+            layer_cache[number] = l2n.make_layer(layout.layer(number, 0), str(number))
+        return layer_cache[number]
 
     active = layer(11)
     gates = layer(7) - layer(10)
@@ -155,9 +159,23 @@ def lvs(gds, spice, output_dir, topcell=None):
             l2n.connect_global(bulk, next(iter(names), "B"))
         l2n.connect(sd)
         sds.append(sd)
+    # Virtual body-contact markers bind the implicit substrate/well to the
+    # existing metal rails without inventing planar diffusion masks.
+    body = l2n.make_layer(layout.layer(100, 20), "body_contacts")
+    well = layer(1)
+    body_n = body - well
+    body_p = body & well
+    names = {
+        s.text.string for s in top.shapes(layout.layer(3, 251)).each() if s.is_text()
+    }
+    substrate = next(iter(names), "B")
+    l2n.connect_global(body_n, substrate)
+    l2n.connect(body_p, well)
     lig, lisd, sdt, v0 = (layer(n) for n in (16, 17, 88, 18))
     metals = [layer(n) for n in (19, 20, 30, 40, 50)]
     vias = [layer(n) for n in (21, 25, 35, 45)]
+    l2n.connect(body_n, metals[0])
+    l2n.connect(body_p, metals[0])
     for region in [gates, lig, lisd, sdt, v0] + metals + vias:
         l2n.connect(region)
     for a, b in [
@@ -251,6 +269,24 @@ def lvs(gds, spice, output_dir, topcell=None):
     text = re.sub(
         r"\bnfin=(\d+)\b", lambda m: f"w={int(m[1])*0.027:.9g}u", text, flags=re.I
     )
+    # Legacy higher-level schematics use X-prefixed MOS leaves, W in um,
+    # and SPICE subcircuit parameters. Translate at the verification boundary
+    # rather than replacing their netlist or placement generators.
+    from glayout.pdk.asap7_mapped import asap7_mapped_pdk
+
+    text = re.sub(
+        r"^X(\S+)(\s+\S+\s+\S+\s+\S+\s+\S+\s+(?:nmos_rvt|pmos_rvt)\b)",
+        r"M\1\2",
+        text,
+        flags=re.M | re.I,
+    )
+    text = re.sub(
+        r"\bw=([0-9.eE+-]+)(u)?(?=\s|$)",
+        lambda m: f"w={asap7_mapped_pdk.finfet.fin_count(float(m[1]))*.027:.9g}u",
+        text,
+        flags=re.M | re.I,
+    )
+    text = re.sub(r"\bl=([0-9.eE+-]+)(?=\s|$)", r"l=\1u", text, flags=re.M | re.I)
     reference_path = out / "reference.spice"
     reference_path.write_text(text)
     reference = k.Netlist()

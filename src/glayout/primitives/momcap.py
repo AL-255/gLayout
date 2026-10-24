@@ -59,3 +59,75 @@ def momcap(pdk, size=(1.0, 1.0), fingers=None):
     comp.info["finfet_technology"] = asdict(pdk.finfet)
     pdk.finfet.validate(comp)
     return comp
+
+
+def legacy_momcap(pdk, size=(1.0, 1.0)):
+    """MOM implementation of the existing top_met/bottom_met cap interface."""
+    from glayout.primitives.via_gen import via_stack
+
+    c = momcap(pdk, size=size)
+    for label in list(c._cell.labels):
+        c._cell.remove(label)
+    length = c.info["momcap"]["length"]
+    xmax = (c.info["momcap"]["fingers"] - 1) * MOM_PITCH
+    for name, net, y, metal in [
+        ("top_met", "V1", 0, "met5"),
+        ("bottom_met", "V2", length, "met4"),
+    ]:
+        v = via_stack(pdk, "met2", metal)
+        margin = max(0.108, (v.xmax - v.xmin) / 2 + 0.054)
+        x = -margin if net == "V1" else xmax + margin
+        r = c << v
+        r.move((x, y))
+        _rect(
+            c,
+            pdk.get_glayer("met2"),
+            min(x, 0) - 0.014,
+            y - 0.014,
+            max(x, xmax) + 0.014,
+            y + 0.014,
+        )
+        c.add_ports(
+            r.get_ports_list(prefix="top_met_"),
+            prefix=name.replace("_met", "") + "_landing_",
+        )
+        bounds = (
+            r.ports["top_met_W"].x,
+            r.ports["top_met_S"].y,
+            r.ports["top_met_E"].x,
+            r.ports["top_met_N"].y,
+        )
+        _ports(c, name + "_", bounds, pdk.get_glayer(metal))
+    return c
+
+
+def legacy_momcap_array(pdk, rows, columns, size, rmult=1, **kwargs):
+    from glayout.util.comp_utils import prec_array
+    from glayout.routing.straight_route import straight_route
+    from glayout.util.port_utils import set_port_orientation
+
+    unit = legacy_momcap(pdk, size)
+    c = Component()
+    array = c << prec_array(unit, rows, columns, spacing=(0.216, 0.216))
+    c.add_ports(array.get_ports_list())
+    for row in range(rows):
+        for col in range(columns - 1):
+            for prefix, metal in [("top_met", "met5"), ("bottom_met", "met4")]:
+                a = c.ports[f"row{row}_col{col}_{prefix}_E"]
+                b = c.ports[f"row{row}_col{col+1}_{prefix}_W"]
+                c << straight_route(
+                    pdk, a, b, glayer1=metal, glayer2=metal, width=0.048
+                )
+    for row in range(rows - 1):
+        for col, prefix, metal in [
+            (0, "top_met", "met5"),
+            (columns - 1, "bottom_met", "met4"),
+        ]:
+            a = c.ports[f"row{row}_col{col}_{prefix}_N"]
+            b = c.ports[f"row{row+1}_col{col}_{prefix}_S"]
+            c << straight_route(pdk, a, b, glayer1=metal, glayer2=metal, width=0.048)
+    nl = Netlist(circuit_name="MOM_ARRAY", nodes=["V1", "V2"])
+    for _ in range(rows * columns):
+        nl.connect_netlist(unit.info["netlist"], [])
+    c.info["netlist"] = nl
+    return c.flatten()

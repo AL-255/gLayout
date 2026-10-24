@@ -1,13 +1,12 @@
-"""Pitch-based, multifinger FinFET generator using the mapped PDK's technology.
+"""FinFET device geometry behind the existing planar primitive interface.
 
-Width is the occupied fin-track height, rounded up to an integer fin count.
-Use nfin for unambiguous sizing; it is recorded in layout and SPICE metadata.
-Dummy gates are outside ACTIVE and therefore do not add electrical devices.
-All dimensions below come from the PDK's FinFETTechnology, not a PDK name.
+Generic 'poly' ports are local gate interconnect (LIG); physical gates are
+separate fixed-width stripes. Everything above fet.__gen_fingers_macro keeps
+its original placement, finger routing, and public port names.
 """
 
-import math
 from dataclasses import asdict
+import math
 from glayout.backend import Component
 from glayout.spice import Netlist
 
@@ -34,6 +33,146 @@ def _ports(comp, prefix, bounds, layer):
         )
 
 
+def fingers(
+    pdk, rmult, fingers, length, width, poly_height, sdlayer, inter_finger_topmet
+):
+    from glayout.primitives.via_gen import via_stack
+
+    t = pdk.finfet
+    if length is not None and not math.isclose(length, t.gate_length, abs_tol=1e-10):
+        raise ValueError("unsupported FinFET gate length")
+    nf = t.fin_count(width)
+    height = nf * t.fin_pitch
+    # Preserve the global fin/gate phase, including even finger/fin counts.
+    xoff = t.gate_pitch / 2 if fingers % 2 == 0 else 0
+    yoff = t.fin_pitch / 2 if nf % 2 == 0 else 0
+    contact_size = max(
+        0.028,
+        pdk.get_grule("met1")["min_width"],
+        pdk.get_grule(inter_finger_topmet)["min_width"],
+    )
+    pitch = t.gate_pitch * max(
+        1,
+        math.ceil(
+            (rmult * contact_size + pdk.get_grule("met1")["min_separation"])
+            / t.gate_pitch
+        ),
+    )
+    xs = [(i - fingers / 2) * pitch + xoff for i in range(fingers + 1)]
+    gx = [(xs[i] + xs[i + 1]) / 2 for i in range(fingers)]
+    # Quantize routing multiplier pitch to an odd gate-pitch multiple so
+    # contact midpoints and gates remain on the same fixed gate lattice.
+    if any(abs(x / t.gate_pitch - round(x / t.gate_pitch)) > 1e-7 for x in gx):
+        pitch += t.gate_pitch
+        xs = [(i - fingers / 2) * pitch + xoff for i in range(fingers + 1)]
+        gx = [(xs[i] + xs[i + 1]) / 2 for i in range(fingers)]
+    left, right = xs[0] - 0.012, xs[-1] + 0.012
+    bottom, top = -height / 2 + yoff, height / 2 + yoff
+    c = Component()
+    _rect(c, pdk.get_glayer("active_diff"), left, bottom, right, top)
+    _ports(c, "diff_", (left, bottom, right, top), pdk.get_glayer("active_diff"))
+    gate_bottom = bottom - t.gate_extension
+    gate_top = top + t.gate_extension
+    gate_contact_y = gate_bottom + 0.016
+    for i, x in enumerate(gx):
+        _rect(
+            c,
+            t.gate_layer,
+            x - t.gate_length / 2,
+            gate_bottom,
+            x + t.gate_length / 2,
+            gate_top,
+        )
+        lig = (x - 0.011, gate_contact_y - 0.011, x + 0.011, gate_contact_y + 0.011)
+        # Keep ports inside the landing so half-grid alignment retains overlap.
+        overlap = 2 * t.manufacturing_grid
+        _rect(
+            c,
+            pdk.get_glayer("poly"),
+            lig[0] - overlap,
+            lig[1] - overlap,
+            lig[2] + overlap,
+            lig[3] + overlap,
+        )
+        _ports(c, f"row0_col{i}_gate_", lig, pdk.get_glayer("poly"))
+    fin_left = min(left, right - t.fin_min_length)
+    for i in range(nf):
+        y = (i - (nf - 1) / 2) * t.fin_pitch + yoff
+        _rect(c, t.fin_layer, fin_left, y - t.fin_width / 2, right, y + t.fin_width / 2)
+    select = (
+        left - t.select_enclosure,
+        gate_bottom - t.select_enclosure,
+        right + t.select_enclosure,
+        gate_top + t.select_enclosure,
+    )
+    _rect(c, pdk.get_glayer(sdlayer), *select)
+    if sdlayer == "p+s/d":
+        enc = t.well_enclosure
+        _rect(
+            c,
+            pdk.get_glayer("nwell"),
+            select[0] - enc,
+            select[1] - enc,
+            select[2] + enc,
+            select[3] + enc,
+        )
+    _ports(
+        c,
+        "plusdoped_",
+        (
+            left - t.select_enclosure,
+            bottom - t.select_enclosure,
+            right + t.select_enclosure,
+            top + t.select_enclosure,
+        ),
+        pdk.get_glayer(sdlayer),
+    )
+    for i, x in enumerate(xs):
+        _rect(c, pdk.get_glayer("sdt"), x - 0.012, bottom, x + 0.012, top)
+        _rect(c, pdk.get_glayer("lisd"), x - 0.012, bottom, x + 0.012, top)
+        _rect(
+            c, pdk.get_glayer("mcon"), x - 0.009, yoff - 0.009, x + 0.009, yoff + 0.009
+        )
+        pad = (
+            x - contact_size / 2,
+            min(bottom, yoff - contact_size / 2),
+            x + contact_size / 2,
+            max(top, yoff + contact_size / 2),
+        )
+        _rect(c, pdk.get_glayer("met1"), *pad)
+        prefix = "leftsd_" if i == 0 else f"row0_col{i-1}_rightsd_"
+        _ports(c, prefix + "bottom_met_", pad, pdk.get_glayer("met1"))
+        _ports(c, prefix + "bottom_layer_", pad, pdk.get_glayer("met1"))
+        if inter_finger_topmet != "met1":
+            stack = via_stack(pdk, "met1", inter_finger_topmet, fulltop=True)
+            ref = c << stack
+            ref.move((x, yoff))
+            _rect(c, pdk.get_glayer(inter_finger_topmet), *pad)
+        _ports(c, prefix + "top_met_", pad, pdk.get_glayer("met1"))
+    # A virtual device envelope preserves bbox-centering assumptions without
+    # shifting physical fin/gate masks off their manufacturing lattices.
+    envelope = t.well_enclosure if sdlayer == "p+s/d" else 0
+    bx = (
+        math.ceil((max(abs(select[0]), abs(select[2])) + envelope) / t.gate_pitch)
+        * t.gate_pitch
+    )
+    by = (
+        math.ceil((max(abs(select[1]), abs(select[3])) + envelope) / t.fin_pitch)
+        * t.fin_pitch
+    )
+    _rect(c, (100, 0), -bx, -by, bx, by)
+    c.info["finfet_technology"] = asdict(t)
+    c.info["finfet"] = {
+        "nfin": nf,
+        "fingers": fingers,
+        "multipliers": 1,
+        "width": height,
+        "length": t.gate_length,
+    }
+    t.validate(c)
+    return c
+
+
 def finfet(
     pdk,
     device="nfet",
@@ -45,215 +184,47 @@ def finfet(
     with_dummy=True,
     sd_route_topmet="met2",
     gate_route_topmet="met2",
+    **kwargs,
 ):
-    """Generate parallel fingers with shared diffusion and routed D/G/S.
+    from glayout.primitives.fet import nmos, pmos
 
-    Gates run vertically and fins horizontally. 90-degree device rotations are
-    illegal. The bulk is the implicit substrate/well, as in the ASAP7 models.
-    Planar guard rings and deep wells are not generated.
-    """
-    t = pdk.finfet
-    if t is None:
-        raise ValueError("PDK must define FinFETTechnology")
-    if device not in ("nfet", "pfet"):
+    fn = nmos if device == "nfet" else pmos if device == "pfet" else None
+    if fn is None:
         raise ValueError("device must be nfet or pfet")
-    for value in (fingers, multipliers):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError("fingers and multipliers must be positive integers")
-    if length is not None and not math.isclose(length, t.gate_length, abs_tol=1e-10):
-        raise ValueError(f"this FinFET PDK requires gate length {t.gate_length} um")
-    if sd_route_topmet != "met2" or gate_route_topmet != "met2":
-        raise NotImplementedError("FinFET POC terminal routes currently use met2")
-    nf = t.fin_count(width, nfin)
-    if isinstance(with_dummy, bool):
-        dummy = (with_dummy, with_dummy)
-    elif len(with_dummy) == 2 and all(isinstance(v, bool) for v in with_dummy):
-        dummy = tuple(with_dummy)
-    else:
-        raise ValueError("with_dummy must be bool or two booleans")
-    pdk.activate()
-    comp = Component()
-    L = pdk.get_glayer
-    active_bottom = -t.fin_pitch / 2
-    active_top = (nf - 0.5) * t.fin_pitch
-    active_left = -t.gate_length / 2 - t.active_gate_extension
-    active_right = (
-        (fingers - 1) * t.gate_pitch + t.gate_length / 2 + t.active_gate_extension
+    return fn(
+        pdk,
+        width=width,
+        nfin=nfin,
+        length=length,
+        fingers=fingers,
+        multipliers=multipliers,
+        with_dummy=with_dummy,
+        sd_route_topmet=sd_route_topmet,
+        gate_route_topmet=gate_route_topmet,
+        **kwargs,
     )
-    half = t.metal_width / 2
-    viahalf = t.via_width / 2
-    # Rows are separated by whole fin pitches, preserving the global fin phase.
-    row_pitch = (
-        math.ceil((nf * t.fin_pitch + t.row_separation) / t.fin_pitch) * t.fin_pitch
-    )
-    first = -1 if dummy[0] else 0
-    last = fingers if dummy[1] else fingers - 1
-    if fingers == 1 and first == last:
-        last += 1
-    gate_y0 = active_bottom - t.gate_extension
-    gate_y1 = (multipliers - 1) * row_pitch + active_top + t.gate_extension
-    for k in range(first, last + 1):
-        x = k * t.gate_pitch
-        _rect(
-            comp,
-            L("poly"),
-            x - t.gate_length / 2,
-            gate_y0,
-            x + t.gate_length / 2,
-            gate_y1,
-        )
-    # Continuous gate stripes are cut between rows, rather than drawn as
-    # disconnected polygons at the same x coordinate (GATE.AUX.2).
-    for row in range(multipliers - 1):
-        _rect(
-            comp,
-            L("gcut"),
-            first * t.gate_pitch - t.gate_length / 2 - 0.016,
-            row * row_pitch + active_top + t.gate_extension,
-            last * t.gate_pitch + t.gate_length / 2 + 0.016,
-            (row + 1) * row_pitch + active_bottom - t.gate_extension,
-        )
-    fin_left = min(active_left, first * t.gate_pitch - t.gate_length / 2)
-    fin_right = max(
-        active_right,
-        last * t.gate_pitch + t.gate_length / 2,
-        fin_left + t.fin_min_length,
-    )
-    for k in range(round((multipliers - 1) * row_pitch / t.fin_pitch) + nf):
-        y = k * t.fin_pitch
-        _rect(
-            comp,
-            L("fin"),
-            fin_left,
-            y - t.fin_width / 2,
-            fin_right,
-            y + t.fin_width / 2,
-        )
-    terminals = {"source": [], "drain": [], "gate": []}
-    for row in range(multipliers):
-        dy = row * row_pitch
-
-        def box(layer, x0, y0, x1, y1):
-            _rect(comp, L(layer), x0, y0 + dy, x1, y1 + dy)
-
-        box("active_diff", active_left, active_bottom, active_right, active_top)
-        gate_y0 = active_bottom - t.gate_extension
-        gate_y1 = active_top + t.gate_extension
-        # Extend SELECT and WELL past both ACTIVE and all uncut gates.
-        sx0 = min(
-            active_left - t.select_enclosure,
-            first * t.gate_pitch - t.gate_length / 2 - t.select_enclosure,
-        )
-        sx1 = max(
-            active_right + t.select_enclosure,
-            last * t.gate_pitch + t.gate_length / 2 + t.select_enclosure,
-        )
-        sy0, sy1 = gate_y0 - t.select_enclosure, gate_y1 + t.select_enclosure
-        box("n+s/d" if device == "nfet" else "p+s/d", sx0, sy0, sx1, sy1)
-        if device == "pfet":
-            box("nwell", sx0, sy0, sx1, sy1)
-        # SDT is the contact to diffusion; LISD connects it to V0/M1.
-        source_y = active_top + t.route_pitch
-        drain_y = active_top + 2 * t.route_pitch
-        for k in range(fingers + 1):
-            x = (k - 0.5) * t.gate_pitch
-            for layer in ("sdt", "lisd"):
-                box(
-                    layer,
-                    x - t.sd_width / 2,
-                    active_bottom,
-                    x + t.sd_width / 2,
-                    active_top,
-                )
-            box("mcon", x - viahalf, -viahalf, x + viahalf, viahalf)
-            by = source_y if k % 2 == 0 else drain_y
-            box(
-                "met1",
-                x - half,
-                -viahalf - t.manufacturing_grid * 10,
-                x + half,
-                by + viahalf + t.manufacturing_grid * 10,
-            )
-            box("via1", x - viahalf, by - viahalf, x + viahalf, by + viahalf)
-        for name, parity, y in (("source", 0, source_y), ("drain", 1, drain_y)):
-            xs = [
-                (k - 0.5) * t.gate_pitch for k in range(fingers + 1) if k % 2 == parity
-            ]
-            bounds = (
-                min(xs) - viahalf - 0.005,
-                y - half,
-                max(xs) + viahalf + 0.005,
-                y + half,
-            )
-            box("met2", *bounds)
-            world = (bounds[0], bounds[1] + dy, bounds[2], bounds[3] + dy)
-            _ports(comp, f"multiplier_{row}_{name}_", world, L("met2"))
-            terminals[name].append(world)
-        # LIG overlaps the gate beyond ACTIVE, avoiding the SDT/LISD contacts.
-        gate_y = active_bottom - t.route_pitch
-        for k in range(fingers):
-            x = k * t.gate_pitch
-            box(
-                "lig",
-                x - t.lig_width / 2,
-                gate_y - t.lig_height / 2,
-                x + t.lig_width / 2,
-                gate_y + t.lig_height / 2,
-            )
-            box("mcon", x - viahalf, gate_y - viahalf, x + viahalf, gate_y + viahalf)
-            box("via1", x - viahalf, gate_y - viahalf, x + viahalf, gate_y + viahalf)
-        bounds = (
-            -viahalf - 0.005,
-            gate_y - half,
-            (fingers - 1) * t.gate_pitch + viahalf + 0.005,
-            gate_y + half,
-        )
-        box("met1", *bounds)
-        box("met2", *bounds)
-        world = (bounds[0], bounds[1] + dy, bounds[2], bounds[3] + dy)
-        _ports(comp, f"multiplier_{row}_gate_", world, L("met2"))
-        terminals["gate"].append(world)
-    # Join multiplier rows on M3; separate x tracks for D/G/S.
-    for index, (name, rectangles) in enumerate(terminals.items()):
-        if multipliers > 1:
-            x = active_left - (index + 2) * t.route_pitch
-            ys = [(b[1] + b[3]) / 2 for b in rectangles]
-            for bounds, y in zip(rectangles, ys):
-                _rect(comp, L("met2"), x - 0.014, y - half, bounds[2], y + half)
-                _rect(
-                    comp, L("via2"), x - viahalf, y - viahalf, x + viahalf, y + viahalf
-                )
-            _rect(
-                comp, L("met3"), x - 0.014, min(ys) - 0.014, x + 0.014, max(ys) + 0.014
-            )
-        _ports(comp, name + "_", rectangles[0], L("met2"))
-    for name, terminal in [("D", "drain"), ("G", "gate"), ("S", "source")]:
-        port = comp.ports[terminal + "_W"]
-        comp.add_label(
-            name,
-            position=(port.center[0] + 0.007, port.center[1]),
-            layer=pdk.get_glayer("met2_label"),
-        )
-    comp.info["finfet_technology"] = asdict(t)
-    comp.info["finfet"] = {
-        "nfin": nf,
-        "fingers": fingers,
-        "multipliers": multipliers,
-        "length": t.gate_length,
-        "width": nf * t.fin_pitch,
-    }
-    comp.info["netlist"] = finfet_netlist(pdk, device, nf, fingers, multipliers)
-    t.validate(comp)
-    return comp
 
 
-def finfet_netlist(pdk, device, nfin, fingers, multipliers):
+def finfet_netlist(
+    pdk,
+    device,
+    nfin,
+    fingers,
+    multipliers,
+    with_dummy=False,
+    dummies_tied_to_bulk=False,
+):
     model = pdk.models[device]
-    # Explicit parallel devices, each with BSIM-CMG nfin (not planar W).
+    dummy = (with_dummy, with_dummy) if isinstance(with_dummy, bool) else with_dummy
     lines = [".subckt {circuit_name} {nodes}"]
     lines += [
         f"M{i} D G S B {model} l={pdk.finfet.gate_length}u nfin={nfin}"
         for i in range(fingers * multipliers)
+    ]
+    dummy_node = "B" if dummies_tied_to_bulk else "DUM"
+    lines += [
+        f"MD{i} {dummy_node} {dummy_node} {dummy_node} B {model} l={pdk.finfet.gate_length}u nfin={nfin}"
+        for i in range(sum(dummy) * multipliers)
     ]
     lines += [".ends {circuit_name}"]
     return Netlist(

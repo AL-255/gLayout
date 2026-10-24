@@ -1,107 +1,108 @@
 # ASAP7 / FinFET proof of concept
 
-Use Python 3.10 and either geometry engine (GLAYOUT_BACKEND=gdstk or
-GLAYOUT_BACKEND=gdsfactory). Install with pip install -e . pytest.
-Set PDK_ROOT=/tmp when no planar PDK is installed (the package also imports
-its legacy planar modules). No external PDK is needed for the demonstration. The mapping and dimensions
-come from ASAP7 r1p7's layer map and design-rule manual. Layout uses native
-micrometres, not the scaled APR libraries.
+Use Python 3.10 with either GLAYOUT_BACKEND=gdstk or GLAYOUT_BACKEND=gdsfactory.
+Install with pip install -e . pytest. Set PDK_ROOT=/tmp if planar PDKs are absent.
+The mapping uses native micrometres and ASAP7 r1p7 dimensions, rather than the
+scaled APR libraries. This is a demonstration, not a signoff flow.
 
-## Transistors and placement
+## Primitive boundary
 
-    from glayout import asap7, nmos, pmos, momcap
-    device = nmos(asap7, nfin=3, fingers=4, multipliers=2)
-    device.write_gds('nfet.gds')
-    print(device.info['netlist'].generate_netlist())
+    from glayout import asap7, nmos, momcap
+    transistor = nmos(asap7, nfin=3, fingers=4, multipliers=2)
+    transistor.write_gds('nfet.gds')
 
-nfin is the explicit fin count. When omitted, width means occupied fin-track
-height in micrometres and rounds UP to complete tracks. It is not planar
-channel width or the effective BSIM-CMG perimeter width. For ASAP7 each track
-is 27 nm. SPICE uses nfin and a 20 nm gate length. Nonphysical gate lengths
-are rejected. Models are nmos_rvt and pmos_rvt.
+FinFET geometry is selected by pdk.finfet in the transistor finger primitive.
+The existing multiplier routing, transistor arrays, interdigitized placement,
+current mirror, common-centroid diffpair, FVF, and composite circuit generators
+remain in use. No alternate schematic-driven circuit placer/router is used.
+All circuit, placement and routing sources match the pre-ASAP7 baseline.
+Potential existing endpoint/capacitor connection fixes are left for review.
 
-FinFETTechnology describes a node's dimensions and layer identities; the
-transistor generator dispatches using pdk.finfet rather than a PDK name.
-ASAP7 uses horizontal 7 nm fins, vertical 20 nm gates, 27/54 nm fin/gate
-pitches, and a 0.5 nm manufacturing grid. S/D contacts use SDT, LISD and V0;
-gate contacts use LIG and V0. Dummy gates lie outside ACTIVE. Multiplier
-rows use continuous gate stripes with GCUT and complete fin lattices.
+nfin selects a positive integral number of fins. Otherwise width is occupied
+fin-track height in micrometres, rounded UP to complete 27 nm tracks. It is not
+BSIM-CMG effective perimeter width. ASAP7 gates are 20 nm long on a 54 nm lattice;
+fins are 7 nm wide on a 27 nm lattice. Unsupported gate lengths are rejected.
+The reference netlist uses nmos_rvt/pmos_rvt, explicit nfin, and electrical dummy
+transistors matching the existing dummy connections.
 
-    top = Component()
-    ref = top << device
-    asap7.finfet.place(ref, origin=(0.541, 0.271))
+Generic poly routing denotes local gate interconnect (LIG, layer 16); actual
+vertical gate stripes use layer 7. Source/drain access uses SDT, LISD, V0 and M1.
+Legacy port names and M1 contact access are retained. Conservative metal routing
+margins and landing pads accommodate the original analog routers, whose options
+include fixed dimensions in micrometres. These margins exceed process minima;
+this is not a dense standard-cell implementation. Circuit CI keeps the original
+analog sizing with 20 nm lengths; narrow one-fin primitives are tested separately.
 
-Import Component from glayout.backend for the placement example. Reference
-origins snap to whole gate/fin pitches; arbitrary bbox centering or 90-degree
-rotation is illegal. Export checks world coordinates through the hierarchy
-and after flattening, rejects off-grid geometry and prevents lossy GDS
-precision. The lattice metadata survives changing the active PDK.
-The gdsfactory compatibility adapter preserves fractional-nanometre ports.
+Device reference translations snap to the fin/gate lattice below the circuit
+hierarchy. This preserves the original placement pattern with small legalizing
+translations. Ninety-degree rotations are rejected. Export validates world
+coordinates and port edges, including flattened layouts, on the 0.5 nm grid.
+Half-grid port midpoints are permitted when their two edges are on-grid.
+The native backend also uses gdsfactory-compatible move(destination=...) semantics.
 
-## Circuits and MOM capacitors
+Layer 100/0 is a virtual device envelope. Layer 100/20 denotes an implicit body
+contact for the existing guard-ring interface; 100/21 denotes a virtual deep well.
+They are metadata, not ASAP7 fabrication masks. Existing metal body rails remain
+present. The POC extraction binds their body markers to substrate/nwell. Multiple
+isolated NMOS substrate biases are unsupported. Foundry body-contact integration
+and a complete well/isolation flow remain outside this demonstration.
 
-All eleven cells in tests/parameters/ci_drc_asap7.csv use the same CI builders
-as SKY130/GF180. Explicit ASAP7 dimensions replace planar sizes and lengths.
-The FinFET path reuses their electrical schematics and uses a simple,
-spacious channel router: M2 escapes, vertical M3 columns, horizontal M4 nets.
-It does not retain planar guard rings, interdigitated placement or common
-centroid matching. Bulk terminals are implicit substrate/well pins. Multiple
-isolated NMOS substrate biases are unsupported.
+## Custom MOM capacitors
 
-The opamp retains its two stages and compensation connections. As requested,
-its historical mim_cap_size/mim_cap_rows options create custom MOM capacitors
-in FinFET mode (two columns, the specified number of rows). M3 fingers connect
-to M2 terminal bars through V2. Call momcap(asap7, size=(0.4, 0.5)) directly
-for a standalone capacitor. Layer 100/10 is a gLayout recognition marker,
-not a fabrication mask. The nominal model is 0.1 fF per micrometre of facing
-finger edge at 44 nm spacing, inversely scaled with gap. This is an
-uncalibrated demonstration model, not a characterized ASAP7 capacitance.
+The capacitor primitive implements historical mim_cap_size/mim_cap_rows options
+using custom interdigitated M3 MOM fingers with M2 terminal bars and V2 contacts.
+Its legacy interface exports separate M5 and M4 landings. The original opamp
+placement and compensation-route topology remain in use; its capacitor terminal
+selection still requires review to connect the two separate MOM plates. Standalone usage:
 
-The optional opamp output buffer and antenna-diode options are not implemented
-in this POC. The CI opamp uses its normal two-stage configuration with those
-options disabled. Primitive terminal routes currently use met2.
+    capacitor = momcap(asap7, size=(0.4, 0.5))
+
+Layer 100/10 is a recognition marker. The nominal capacitance is 0.1 fF per
+micrometre of facing edge at a 44 nm gap, inversely scaled with gap. This model
+is uncalibrated and is not a characterized ASAP7 capacitance.
 
 ## Verification
 
+    pytest -q tests/test_finfet.py
     python tests/drc/run_cell_drc.py --pdk asap7 --jobs 2 --out-dir asap7_results/drc
     python tests/lvs/run_cell_lvs.py --pdk asap7 --jobs 2 --inputs-dir asap7_results/drc --out-dir asap7_results/lvs
-    pytest -q tests/test_finfet.py
 
-ASAP7 DRC is an OPEN KLAYOUT POC SUBSET, not the official Calibre signoff deck.
-It checks manufacturing/fin/gate lattices, fin dimensions and channel fin
-counts, ACTIVE track height, selected width/spacing/area rules for ACTIVE,
-SELECT, WELL, LISD, LIG, SDT, M1-M5 and V0-V4, contact containment, and selected
-cross-layer separations. It does not implement the entire DRM: in particular
-all tip/corner spacing, exact pitch adjacency, enclosure, GCUT, density and
-upper-metal routing-track rules are not comprehensively checked. No area or
-density exclusions are used for ASAP7's implemented rules.
+DRC implements an open KLayout rule subset, not the licensed Calibre signoff deck.
+It checks manufacturing/fin/gate lattices, channel fin counts, ACTIVE track height,
+selected width/spacing/area rules, local contacts, and M1-M5/V0-V4 containment.
+It does not comprehensively check tip/corner spacing, pitch adjacency, enclosure,
+GCUT, density, or upper-metal routing tracks. No implemented ASAP7 rule is ignored.
+Overlapping legacy via landings may yield closely spaced redundant cuts. Export
+coalesces collinear cuts only when both existing adjacent metals cover the entire
+merged cut; it never bridges a metal gap or changes conductor connectivity.
 
-LVS independently reads GDS, derives MOS channels, extracts SDT/LISD/LIG/
-V0/metal connectivity and compares against external SPICE. NFIN reference
-values convert to occupied-track W for KLayout's generic MOS extractor;
-DRC independently checks actual FIN/channel intersections. Top-level pins
-must match, and only declared bulk names have implicit connection semantics.
-The MOM extractor measures neighbouring finger overlaps and gaps and probes
-their actual nets; it does not infer a capacitor merely from its marker.
-Negative tests cover missing contacts, shorts, wrong fin counts, missing MOM
-fingers, illegal transforms and insufficient GDS precision.
+LVS independently extracts devices and connectivity from GDS and compares external
+SPICE. It quantizes schematic widths independently and retains original circuit
+schematics. Top-level pins must match. Standalone CI labels in tests/asap7_pins.py
+add text only, with no route/device replacement. Repeated declared body labels
+represent the same external bulk connection. MOM capacitance is measured from
+actual neighbouring finger edges and actual connected nets.
 
-The ASAP7 workflow runs both geometry engines, preserves every existing CI
-cell name, and uploads GDS, reference/extracted SPICE, extraction databases,
-JSON summaries and JUnit results. Existing planar CI flows remain in place.
+Negative tests cover broken contacts, shorts, wrong fin counts, missing MOM
+fingers, illegal placement/rotation, and insufficient GDS precision. Regression
+checks also exercise the original mirror/diffpair/FVF path through the finger leaf.
 
-## Validation recorded for this change
+The original alternate-router validation results do not validate this corrected
+architecture. Current summaries and extracted/reference netlists must be inspected
+for the restored hierarchy; remaining composite failures must not be reported as
+DRC/LVS-clean.
 
-- Python 3.10 / pinned KLayout 0.28.17: 46 FinFET tests pass on each geometry engine.
-- Python 3.13 / KLayout 0.30.12: the same 46 tests pass on gdstk.
-- ASAP7: all 11 CSV examples pass POC DRC and extracted LVS on both engines,
-  with no skipped examples, including the compensated opamp.
-- Existing planar CI DRC: SKY130 11/11 and GF180 11/11 pass on gdsfactory.
-- Existing planar CI LVS: GF180 8/8 pass after correcting its MIM option to B
-  and quoting include paths; SKY130 7/8 pass. The SKY130 opamp has one existing
-  LVS net mismatch. An independent checkout of baseline commit 3e129ed reproduces
-  that failure; its opamp geometry has an empty per-layer XOR against this
-  branch and its reference schematic is identical. This is not an ASAP7 result.
-- The full existing Python suite completed with 80 passed, 8 skipped,
-  5 expected failures and 5 unexpected passes before the final three new tests;
-  the final fast CI suite and all final FinFET tests were rerun successfully.
+## Corrected hierarchy validation
+
+The circuit, placement, and routing sources have zero diff against baseline
+3e129ed. Native backend: 55 primitive/backend tests pass; gdsfactory: 49 FinFET tests pass; the additional fast
+planar/import/pin-filter checks passed (75 total tests and 16 subtests).
+All eleven existing examples pass the implemented DRC subset on both engines.
+Extracted LVS passes 8/11 on both engines: diff_pair, diff_pair_ibias, and opamp still
+fail. No example is skipped or its failure suppressed. The proposed two
+diffpair endpoint changes and one MOM plate selection are not applied because
+the current scope forbids changes above the transistor. They require review;
+they have not been validated as a solution to every remaining mismatch.
+
+An unapplied three-line endpoint/plate-selection proposal is provided separately
+for review. It preserves the planar route expressions.

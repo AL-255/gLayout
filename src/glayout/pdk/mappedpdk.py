@@ -298,9 +298,11 @@ class MappedPDK(Pdk):
 
     def activate(self):
         super().activate()
-        from glayout.pdk.finfet import activate_grid, install_export_guard
+        from glayout.pdk.finfet import activate_grid, install_export_guard, install_reference_grid
         activate_grid(self.finfet)
         install_export_guard(Component)
+        from glayout.backend import ComponentReference
+        install_reference_grid(ComponentReference)
 
     models: dict = {
         "nfet": "",

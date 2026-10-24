@@ -12,7 +12,10 @@ layers = {
     "nwell": (1, 0),
     "pwell": (3, 0),
     "fin": (2, 0),
-    "poly": (7, 0),
+    "poly": (16, 0),
+    "active_tap": (100, 20),
+    "dnwell": (100, 21),
+    "capmet": (100, 10),
     "gcut": (10, 0),
     "active_diff": (11, 0),
     "n+s/d": (12, 0),
@@ -40,7 +43,7 @@ rule("poly", "poly", min_width=0.020, min_separation=0.034, pitch=0.054)
 rule("fin", "fin", width=0.007, min_width=0.007, pitch=0.027)
 rule("active_diff", "active_diff", min_width=0.027, min_separation=0.092)
 for i in range(1, 6):
-    width, sep = (0.018, 0.031) if i <= 3 else (0.024, 0.036)
+    width, sep = (0.040, 0.300) if i <= 3 else (0.046, 0.300)
     rule(f"met{i}", f"met{i}", min_width=width, min_separation=sep)
 for i in range(1, 5):
     width = 0.018 if i <= 3 else 0.024
@@ -49,6 +52,31 @@ for i in range(1, 5):
         rule(f"via{i}", f"met{metal}", min_enclosure=0.005 if metal < 4 else 0.011)
 rule("mcon", "mcon", width=0.018, min_separation=0.030)
 rule("mcon", "met1", min_enclosure=0.005)
+
+# Generic primitive contracts: poly denotes gate local interconnect (LIG).
+# Actual gate stripes use FinFETTechnology.gate_layer=(7,0).
+rule("poly", "active_diff", overhang=0.072)
+rule("poly", "mcon", min_enclosure=0.001, min_separation=0.005)
+rule("active_diff", "mcon", min_enclosure=0.003)
+rule("active_tap", "active_tap", min_width=0.028, min_separation=0.108)
+rule("active_tap", "active_diff", min_separation=0.108)
+rule("active_tap", "mcon", min_enclosure=0.005)
+for select in ("n+s/d", "p+s/d"):
+    rule(select, select, min_width=0.054, min_separation=0.054)
+    rule(select, "active_diff", min_enclosure=0.054)
+    rule(select, "active_tap", min_enclosure=0.027)
+for well in ("pwell", "nwell", "dnwell"):
+    rule(well, well, min_width=0.108, min_separation=0.108)
+    rule(well, "active_tap", min_enclosure=0.300, min_separation=0.108)
+    rule(well, "active_diff", min_enclosure=0.027, min_separation=0.027)
+rule("pwell", "dnwell", min_enclosure=0.054)
+rule("poly", "poly", min_width=0.020, min_separation=0.034, pitch=0.054)
+rule("capmet", "capmet", min_separation=0.108, capmettop=(50, 0), capmetbottom=(40, 0))
+for metal in ("met4", "met5"):
+    rule(metal, "capmet", min_enclosure=0.0)
+
+# Reverse mapping should prefer the generic routable alias for LIG.
+layers["poly"] = layers.pop("poly")
 
 asap7_mapped_pdk = MappedPDK(
     name="asap7",
@@ -59,7 +87,11 @@ asap7_mapped_pdk = MappedPDK(
     pdk_files={},
     valid_bjt_sizes={},
     finfet=FinFETTechnology(
-        fin_pitch=0.027, fin_width=0.007, gate_pitch=0.054, gate_length=0.020
+        fin_pitch=0.027,
+        fin_width=0.007,
+        gate_pitch=0.054,
+        gate_length=0.020,
+        well_enclosure=0.108,
     ),
 )
 asap7_mapped_pdk.gds_write_settings.precision = 0.5e-9

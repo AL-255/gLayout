@@ -167,11 +167,6 @@ def  transmission_gate(
     tuples are in (NMOS,PMOS) order
     **kwargs are any kwarg that is supported by nmos and pmos
     """
-    if pdk.finfet is not None:
-        from glayout.placement.finfet_circuit import finfet_circuit
-        nfet = nmos(pdk,width=width[0],length=length[0],fingers=fingers[0],multipliers=multipliers[0])
-        pfet = pmos(pdk,width=width[1],length=length[1],fingers=fingers[1],multipliers=multipliers[1])
-        return finfet_circuit(pdk,tg_netlist(nfet,pfet))
    
     #top level component
     top_level = Component()

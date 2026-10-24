@@ -170,15 +170,6 @@ def __route_sharedgatecomps(pdk: MappedPDK, shared_gate_comps, via_location, pto
     return shared_gate_comps
 
 def differential_to_single_ended_converter_netlist(pdk: MappedPDK, half_pload: tuple[float, float, int]) -> Netlist:
-    if pdk.finfet is not None:
-        from glayout.primitives.finfet import finfet_netlist
-        if abs(half_pload[1]-pdk.finfet.gate_length)>1e-10:
-            raise ValueError('unsupported FinFET gate length')
-        result=Netlist(circuit_name='DIFF_TO_SINGLE',nodes=['VIN','VOUT','VSS','VSS2'])
-        for drain,source,count in [('VOUT','VSS',8),('VSS2','VSS',8),('VIN','VOUT',2*half_pload[2]),('VOUT','VSS2',2*half_pload[2])]:
-            leaf=finfet_netlist(pdk,'pfet',pdk.finfet.fin_count(half_pload[0]),count,1)
-            result.connect_netlist(leaf,[('D',drain),('G','VIN'),('S',source),('B','VSS'),('DUM','VSS')])
-        return result
     # Schematic structure matches OpenFASOC reference: PMOS bulks tied to VSS
     # (no separate `B` top-level port).
     #
@@ -232,9 +223,6 @@ XDUMMY10 VSS VSS VSS VSS {model} l={{l}} w={{w}}
     )
 
 def differential_to_single_ended_converter(pdk: MappedPDK, rmult: int, half_pload: tuple[float,float,int], via_xlocation) -> Component:
-    if pdk.finfet is not None:
-        from glayout.placement.finfet_circuit import finfet_circuit
-        return finfet_circuit(pdk,differential_to_single_ended_converter_netlist(pdk,half_pload))
     clear_cache()
     pmos_comps, ptop_AB, pbottom_AB, LRplusdopedPorts, LRgatePorts, LRdrainsPorts, LRsourcesPorts, LRdummyports = __create_sharedgatecomps(pdk, rmult,half_pload)
     clear_cache()

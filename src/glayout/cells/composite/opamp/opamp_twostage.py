@@ -221,9 +221,6 @@ def opamp_twostage(
     rmult: routing multiplier (larger = wider routes)
     with_antenna_diode_on_diffinputs: adds antenna diodes with_antenna_diode_on_diffinputs*(1um/0.5um) on the positive and negative inputs to the opamp
     """
-    if pdk.finfet is not None:
-        from glayout.placement.finfet_opamp import finfet_opamp
-        return finfet_opamp(pdk,half_diffpair_params,diffpair_bias,half_common_source_params,half_common_source_bias,half_pload,mim_cap_size,mim_cap_rows,rmult,with_antenna_diode_on_diffinputs)
     # error checks
     if with_antenna_diode_on_diffinputs!=0 and with_antenna_diode_on_diffinputs<2:
         raise ValueError("number of antenna diodes should be at least 2 (or 0 to specify no diodes)")

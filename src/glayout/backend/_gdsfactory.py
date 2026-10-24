@@ -72,3 +72,16 @@ for _name in ('snap', 'port', 'component', 'component_reference'):
     _module = _importlib.import_module('gdsfactory.' + _name)
     if hasattr(_module, 'snap_to_grid'):
         _module.snap_to_grid = _fractional_snap
+
+
+def _fractional_port_snap(x,grid_factor=1):
+    from glayout.pdk.finfet import _active_technology
+    if _active_technology.get() is None:return _original_snap(x,grid_factor=grid_factor)
+    # An on-grid edge with an odd number of grid units has a half-grid
+    # midpoint. Preserve it when gdsfactory constructs or copies a Port.
+    import numpy as np
+    pitch=_active_technology.get().manufacturing_grid*grid_factor/2
+    result=pitch*np.round(np.asarray(x,dtype=float)/pitch)
+    return tuple(result) if isinstance(x,tuple) else float(result) if np.isscalar(x) else result
+
+_importlib.import_module('gdsfactory.port').snap_to_grid=_fractional_port_snap

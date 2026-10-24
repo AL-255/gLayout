@@ -338,6 +338,10 @@ def _run_one_cell(item: dict) -> dict:
             if hasattr(comp, "parent") and "netlist" in getattr(comp.parent, "info", {}):
                 wrapper.info["netlist"] = comp.parent.info["netlist"]
             comp = wrapper
+        if pdk_name == 'asap7':
+            sys.path.insert(0,str(REPO_ROOT/'tests'))
+            from asap7_pins import add_pins
+            comp=add_pins(comp,name,pdk)
         comp.name = name
         comp.write_gds(str(gds_path))
         netlist_info = comp.info.get("netlist") if hasattr(comp, "info") else None

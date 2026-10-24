@@ -117,8 +117,15 @@ class FinFETTechnology:
                 if not _on_grid((hi[axis] + lo[axis]) / 2, pitch):
                     raise ValueError(f"off fin/gate placement grid on layer {layer}")
         for port in component.ports.values():
-            if not all(_on_grid(v, self.manufacturing_grid) for v in port.center):
-                raise ValueError(f"off manufacturing grid port {port.name}")
+            normal = 0 if round(port.orientation or 0) % 180 == 0 else 1
+            tangent = 1 - normal
+            edges = (
+                port.center[normal],
+                port.center[tangent] - port.width / 2,
+                port.center[tangent] + port.width / 2,
+            )
+            if not all(_on_grid(v, self.manufacturing_grid) for v in edges):
+                raise ValueError(f"off manufacturing grid port edges {port.name}")
         return component
 
 
@@ -186,6 +193,7 @@ def install_export_guard(component_class):
         technology = component_technology(self)
         if technology is not None:
             technology.validate(self)
+            self = legalize_redundant_vias(self, technology)
             bound = inspect.signature(original).bind_partial(self, *args, **kwargs)
             unit = kwargs.get("unit", bound.arguments.get("unit")) or 1e-6
             precision = technology.manufacturing_grid * unit
@@ -201,3 +209,138 @@ def install_export_guard(component_class):
     write_gds._finfet_guard = True
     component_class.write_gds = write_gds
     component_class.flatten = flatten
+
+
+def install_reference_grid(reference_class):
+    """Legalize device reference translations below all circuit generators.
+
+    Routes and contact references keep their original coordinates. References
+    containing actual FIN/GATE masks move by whole process pitches; no device
+    mask is stretched, and the existing generator placement pattern is retained.
+    """
+    if getattr(reference_class.move, "_finfet_reference_guard", False):
+        return
+
+    def align(ref):
+        t = component_technology(ref.parent)
+        if t is None:
+            return
+        polygons = polygons_by_layer(ref.parent).get(t.gate_layer, [])
+        if not polygons:
+            return
+        if not math.isclose(float(ref.rotation or 0) % 180, 0, abs_tol=1e-8):
+            raise ValueError("FinFET devices cannot rotate by 90 degrees")
+        points = np.asarray(polygons[0])
+        x = float((points[:, 0].min() + points[:, 0].max()) / 2)
+        fins = polygons_by_layer(ref.parent).get(t.fin_layer, [])
+        y = 0.0
+        if fins:
+            points = np.asarray(fins[0])
+            y = float((points[:, 1].min() + points[:, 1].max()) / 2)
+        sign = (
+            -1 if math.isclose(float(ref.rotation or 0) % 360, 180, abs_tol=1e-8) else 1
+        )
+        x *= sign
+        y *= sign * (-1 if ref.x_reflection else 1)
+        ox, oy = ref.origin
+        sx, sy = t.snap_placement((ox + x, oy + y))
+        ref.origin = (sx - x, sy - y)
+        if hasattr(ref, "_bb_valid"):
+            ref._bb_valid = False
+
+    for name in ("move", "movex", "movey", "rotate", "mirror", "mirror_x", "mirror_y"):
+        if not hasattr(reference_class, name):
+            continue
+        original = getattr(reference_class, name)
+
+        def wrapper(self, *args, _original=original, **kwargs):
+            result = _original(self, *args, **kwargs)
+            align(self)
+            return result
+
+        wrapper._finfet_reference_guard = True
+        setattr(reference_class, name, wrapper)
+
+
+def legalize_redundant_vias(component, technology):
+    """Coalesce collinear cuts only when both metals already cover the hull.
+
+    Legacy wide-wire landings can duplicate a cut 9 nm from another cut on
+    the same metal pair. A longer cut is legal (V1-V3.W.1 is a minimum), and
+    does not alter placement, routing or connectivity. Never bridge a metal
+    gap or connect distinct conductors to make DRC pass.
+    """
+    import klayout.db as k
+    from glayout.backend import Component
+    import gdstk
+
+    dbu = technology.manufacturing_grid
+    polygons = polygons_by_layer(component)
+
+    def region(layer):
+        r = k.Region()
+        for points in polygons.get(layer, []):
+            r.insert(
+                k.Polygon([k.Point(round(x / dbu), round(y / dbu)) for x, y in points])
+            )
+        return r.merged()
+
+    changed = {}
+    for low, via, high in ((19, 21, 20), (20, 25, 30), (30, 35, 40)):
+        cuts = region((via, 0))
+        if cuts.is_empty():
+            continue
+        lower, upper = region((low, 0)), region((high, 0))
+        boxes = [p.bbox() for p in cuts.each() if p.is_box()]
+        if len(boxes) != cuts.size():
+            continue
+        did_change = False
+        for axis in (0, 1):
+            groups = {}
+            for box in boxes:
+                key = (box.bottom, box.top) if axis == 0 else (box.left, box.right)
+                groups.setdefault(key, []).append(box)
+            new = []
+            for group in groups.values():
+                group.sort(key=lambda b: b.left if axis == 0 else b.bottom)
+                current = group[0]
+                for box in group[1:]:
+                    gap = (
+                        box.left - current.right
+                        if axis == 0
+                        else box.bottom - current.top
+                    )
+                    hull = current + box
+                    footprint = k.Region(hull)
+                    if (
+                        0 < gap * dbu < 0.018 - 1e-9
+                        and (footprint - lower).is_empty()
+                        and (footprint - upper).is_empty()
+                    ):
+                        current = hull
+                        did_change = True
+                    else:
+                        new.append(current)
+                        current = box
+                new.append(current)
+            boxes = new
+        if did_change:
+            changed[via] = boxes
+    if not changed:
+        return component
+    result = component.copy().flatten()
+    # This private export copy replaces the original; preserve its GDS name.
+    result._cell.name = component.name
+    for polygon in list(result._cell.polygons):
+        if polygon.datatype == 0 and polygon.layer in changed:
+            result._cell.remove(polygon)
+    for layer, boxes in changed.items():
+        for b in boxes:
+            result._cell.add(
+                gdstk.rectangle(
+                    (b.left * dbu, b.bottom * dbu),
+                    (b.right * dbu, b.top * dbu),
+                    layer=layer,
+                )
+            )
+    return result

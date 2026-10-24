@@ -8,6 +8,12 @@ from glayout import asap7, nmos, pmos
 from glayout.backend import Component
 from glayout.pdk.finfet import FinFETTechnology
 from glayout.pdk.asap7_mapped.verification import drc, lvs
+from asap7_pins import add_pins
+
+
+def labelled_fet(builder=nmos, **kwargs):
+    c = builder(asap7, **kwargs)
+    return add_pins(c, "nmos_narrow" if builder is nmos else "pmos_narrow", asap7)
 
 
 @pytest.mark.parametrize("builder", [nmos, pmos])
@@ -15,7 +21,7 @@ from glayout.pdk.asap7_mapped.verification import drc, lvs
 @pytest.mark.parametrize("fingers", [1, 2, 4])
 @pytest.mark.parametrize("multipliers", [1, 2])
 def test_finfet_electrical_matrix(tmp_path, builder, nfin, fingers, multipliers):
-    c = builder(asap7, nfin=nfin, fingers=fingers, multipliers=multipliers)
+    c = labelled_fet(builder, nfin=nfin, fingers=fingers, multipliers=multipliers)
     gds = tmp_path / "fet.gds"
     spice = tmp_path / "fet.spice"
     c.write_gds(gds)
@@ -27,21 +33,22 @@ def test_finfet_electrical_matrix(tmp_path, builder, nfin, fingers, multipliers)
 
 
 def test_placement_guard_catches_hierarchy_and_rotation(tmp_path):
-    c = nmos(asap7, nfin=3)
+    c = labelled_fet(nfin=3)
     parent = Component()
     ref = parent << c
     ref.movex(0.001)
+    assert ref.origin[0] == pytest.approx(0)
+    ref.origin = (0.001, 0)
     with pytest.raises(ValueError, match="placement grid"):
         parent.write_gds(tmp_path / "off.gds")
     asap7.finfet.place(ref, (0.0541, -0.0271))
     parent.write_gds(tmp_path / "on.gds")
-    ref.rotate(90)
-    with pytest.raises(ValueError, match="width or rotation"):
-        parent.write_gds(tmp_path / "rotated.gds")
+    with pytest.raises(ValueError, match="cannot rotate"):
+        ref.rotate(90)
 
 
 def test_precision_must_preserve_half_nanometre(tmp_path):
-    c = nmos(asap7, nfin=3)
+    c = labelled_fet(nfin=3)
     with pytest.raises(ValueError, match="precision"):
         c.write_gds(tmp_path / "rounded.gds", precision=1e-9)
 
@@ -72,13 +79,15 @@ def test_technology_is_not_selected_by_pdk_name(tmp_path):
 
 
 def test_lvs_detects_wrong_fin_count_and_broken_contact(tmp_path):
-    c = nmos(asap7, nfin=3)
+    c = labelled_fet(nfin=3)
     gds = tmp_path / "fet.gds"
     spice = tmp_path / "fet.spice"
     c.write_gds(gds)
     text = c.info["netlist"].generate_netlist()
     spice.write_text(text.replace("nfin=3", "nfin=4"))
     assert not lvs(gds, spice, tmp_path / "wrong_nfin")["match"]
+    spice.write_text(text)
+    assert lvs(gds, spice, tmp_path / "good")["match"]
     spice.write_text(text)
     lib = gdstk.read_gds(gds)
     for cell in lib.cells:
@@ -90,13 +99,13 @@ def test_lvs_detects_wrong_fin_count_and_broken_contact(tmp_path):
 
 
 def test_lvs_detects_short(tmp_path):
-    c = nmos(asap7, nfin=3)
+    c = labelled_fet(nfin=3)
     spice = tmp_path / "fet.spice"
     gds = tmp_path / "short.gds"
     spice.write_text(c.info["netlist"].generate_netlist())
     s, d = c.ports["source_E"], c.ports["drain_E"]
     c.add_polygon(
-        [(-0.041, s.y), (0.041, s.y), (0.041, d.y), (-0.041, d.y)],
+        [(s.x - 0.02, s.y), (s.x, s.y), (s.x, d.y), (s.x - 0.02, d.y)],
         layer=asap7.get_glayer("met2"),
     )
     c.write_gds(gds)
@@ -120,7 +129,7 @@ def test_lattice_survives_flatten_and_planar_activation(tmp_path):
     device = nmos(asap7, nfin=3)
     parent = Component()
     ref = parent << device
-    ref.movex(0.001)
+    ref.origin = (0.001, 0)
     parent = parent.flatten()
     from glayout.pdk.mappedpdk import MappedPDK
 
@@ -161,3 +170,38 @@ def test_asap7_ci_covers_existing_examples():
             return {row["cell"] for row in csv.DictReader(f)}
 
     assert names("asap7") == names("sky130") == names("gf180")
+
+
+@pytest.mark.parametrize(
+    "name,kwargs,port",
+    [
+        ("current_mirror", {"width": 0.081, "numcols": 2}, "fet_A_drain_N"),
+        ("diff_pair", {"width": 0.081, "fingers": 2}, "tl_multiplier_0_gate_N"),
+        (
+            "flipped_voltage_follower",
+            {
+                "width": (0.324, 0.324),
+                "length": (0.02, 0.02),
+                "fingers": (2, 2),
+                "multipliers": (1, 1),
+            },
+            "A_multiplier_0_gate_N",
+        ),
+    ],
+)
+def test_original_circuits_use_finger_leaf(monkeypatch, name, kwargs, port):
+    import glayout.primitives.finfet as leaf
+    from glayout.cells import elementary
+
+    original = leaf.fingers
+    calls = []
+
+    def record(*args, **kw):
+        calls.append((args, kw))
+        return original(*args, **kw)
+
+    monkeypatch.setattr(leaf, "fingers", record)
+    c = getattr(elementary, name)(asap7, **kwargs)
+    assert calls
+    assert port in c.ports
+    asap7.finfet.validate(c)

@@ -174,14 +174,6 @@ def  flipped_voltage_follower(
     sd_rmult: sd_rmult for both fets
     **kwargs: any kwarg that is supported by nmos and pmos
     """
-    if pdk.finfet is not None:
-        from glayout.placement.finfet_circuit import finfet_circuit
-        fn = nmos if device_type=='nmos' else pmos
-        fets = [fn(pdk,width=width[i],length=length[i],fingers=fingers[i],multipliers=multipliers[i]) for i in range(2)]
-        netlist = fvf_netlist(*fets)
-        result = finfet_circuit(pdk,netlist)
-        result.info['netlist_obj'] = netlist
-        return result
    
     #top level component
     top_level = Component()

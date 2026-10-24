@@ -44,6 +44,9 @@ def __comp_min_width(pdk: MappedPDK) -> float:
 @validate_arguments
 def __gen_fingers_macro(pdk: MappedPDK, rmult: int, fingers: int, length: float, width: float, poly_height: float, sdlayer: str, inter_finger_topmet: str) -> Component:
     """internal use: returns an array of fingers"""
+    if pdk.finfet is not None:
+        from glayout.primitives.finfet import fingers as finfet_fingers
+        return finfet_fingers(pdk,rmult,fingers,length,width,poly_height,sdlayer,inter_finger_topmet)
     length = pdk.snap_to_2xgrid(length)
     width = pdk.snap_to_2xgrid(width)
     poly_height = pdk.snap_to_2xgrid(poly_height)
@@ -125,7 +128,8 @@ def fet_netlist(
     length: float,
     fingers: int,
     multipliers: int,
-    with_dummy: Union[bool, tuple[bool, bool]]
+    with_dummy: Union[bool, tuple[bool, bool]],
+    dummies_tied_to_bulk: bool = False
 ) -> Netlist:
     """Generate a primitive transistor subckt netlist.
 
@@ -142,7 +146,7 @@ def fet_netlist(
         device = 'nfet' if model == pdk.models['nfet'] else 'pfet'
         if length is not None and abs(length-pdk.finfet.gate_length)>1e-10:
             raise ValueError('unsupported FinFET gate length')
-        return finfet_netlist(pdk, device, pdk.finfet.fin_count(width), fingers, multipliers)
+        return finfet_netlist(pdk, device, pdk.finfet.fin_count(width), fingers, multipliers, with_dummy, dummies_tied_to_bulk)
     # add spice netlist
     num_dummies = 0
     if with_dummy == False or with_dummy == (False, False):
@@ -270,6 +274,9 @@ def multiplier(
         raise ValueError("routing multipliers must be positive int")
     if fingers < 1:
         raise ValueError("number of fingers must be positive int")
+    # Normalize the leaf width before the existing routing derives positions.
+    if pdk.finfet is not None:
+        width=pdk.finfet.fin_count(width)*pdk.finfet.fin_pitch
     # argument parsing and rule setup
     min_length = pdk.get_grule("poly")["min_width"]
     length = min_length if (length or min_length) <= min_length else length
@@ -324,6 +331,8 @@ def multiplier(
         gate_width = gate_S_port.center[0] - multiplier.ports["row0_col0_gate_S"].center[0] + gate_S_port.width
         gate = rename_ports_by_list(via_array(pdk,"poly",gate_route_topmet, size=(gate_width,None),num_vias=(None,gate_rmult), no_exception=True, fullbottom=True),[("top_met_","gate_")])
         gate_ref = align_comp_to_port(gate.copy(), psuedo_Ngateroute, alignment=(None,'b'),layer=pdk.get_glayer("poly"))
+        if pdk.finfet is not None:
+            gate_ref.movex((gate_S_port.x+multiplier.ports['row0_col0_gate_S'].x)/2-gate_ref.center[0])
         multiplier.add(gate_ref)
         # place route met: source, drain
         sd_width = sdvia_ports[-1].center[0] - sdvia_ports[0].center[0]
@@ -503,11 +512,11 @@ def nmos(
     dummy_routes: bool default=True, if true add add vias and short dummy poly,source,drain
     """
     if pdk.finfet is not None:
-        from glayout.primitives.finfet import finfet
-        return finfet(pdk, device='nfet', width=width, nfin=nfin,
-                      length=length, fingers=fingers, multipliers=multipliers,
-                      with_dummy=with_dummy, sd_route_topmet=sd_route_topmet,
-                      gate_route_topmet=gate_route_topmet)
+        if any(isinstance(v,bool) or not isinstance(v,int) or v<1 for v in (fingers,multipliers)):
+            raise ValueError('fingers and multipliers must be positive integers')
+        width = pdk.finfet.fin_count(width,nfin)*pdk.finfet.fin_pitch
+        if length is not None and abs(length-pdk.finfet.gate_length)>1e-10:
+            raise ValueError('unsupported FinFET gate length')
     # TODO: glayer checks
     pdk.activate()
     nfet = Component()
@@ -603,8 +612,14 @@ def nmos(
         length=length,
         fingers=fingers,
         multipliers=multipliers,
-        with_dummy=with_dummy
+        with_dummy=with_dummy,
+        dummies_tied_to_bulk=with_tie
     )
+
+    if pdk.finfet is not None:
+        component.info['finfet']={'nfin':pdk.finfet.fin_count(width),'fingers':fingers,
+                                  'multipliers':multipliers,'length':pdk.finfet.gate_length,
+                                  'width':width}
 
     return component
 
@@ -655,11 +670,11 @@ def pmos(
     dummy_routes: bool default=True, if true add add vias and short dummy poly,source,drain
     """
     if pdk.finfet is not None:
-        from glayout.primitives.finfet import finfet
-        return finfet(pdk, device='pfet', width=width, nfin=nfin,
-                      length=length, fingers=fingers, multipliers=multipliers,
-                      with_dummy=with_dummy, sd_route_topmet=sd_route_topmet,
-                      gate_route_topmet=gate_route_topmet)
+        if any(isinstance(v,bool) or not isinstance(v,int) or v<1 for v in (fingers,multipliers)):
+            raise ValueError('fingers and multipliers must be positive integers')
+        width = pdk.finfet.fin_count(width,nfin)*pdk.finfet.fin_pitch
+        if length is not None and abs(length-pdk.finfet.gate_length)>1e-10:
+            raise ValueError('unsupported FinFET gate length')
     # TODO: glayer checks
     pdk.activate()
     pfet = Component()
@@ -748,7 +763,13 @@ def pmos(
         length=length,
         fingers=fingers,
         multipliers=multipliers,
-        with_dummy=with_dummy
+        with_dummy=with_dummy,
+        dummies_tied_to_bulk=with_tie
     )
+
+    if pdk.finfet is not None:
+        component.info['finfet']={'nfin':pdk.finfet.fin_count(width),'fingers':fingers,
+                                  'multipliers':multipliers,'length':pdk.finfet.gate_length,
+                                  'width':width}
 
     return component
