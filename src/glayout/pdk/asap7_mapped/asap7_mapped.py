@@ -6,12 +6,15 @@ signoff authority. Importing this module requires no proprietary tools/PDK.
 """
 
 from glayout.pdk.mappedpdk import MappedPDK
-from glayout.pdk.finfet import FinFETTechnology
+from glayout.pdk.finfet import FinFETTechnology, FinFETFlavor
 
 layers = {
     "nwell": (1, 0),
     "pwell": (3, 0),
     "fin": (2, 0),
+    "slvt": (97, 0),
+    "lvt": (98, 0),
+    "sramvt": (110, 0),
     "poly": (16, 0),
     "active_tap": (100, 20),
     "dnwell": (100, 21),
@@ -83,6 +86,12 @@ asap7_mapped_pdk = MappedPDK(
     layers=layers,
     glayers={key: key for key in layers},
     models={"nfet": "nmos_rvt", "pfet": "pmos_rvt"},
+    finfet_flavors={
+        "rvt": FinFETFlavor("nmos_rvt", "pmos_rvt"),
+        "lvt": FinFETFlavor("nmos_lvt", "pmos_lvt", "lvt"),
+        "slvt": FinFETFlavor("nmos_slvt", "pmos_slvt", "slvt"),
+        "sram": FinFETFlavor("nmos_sram", "pmos_sram", "sramvt"),
+    },
     grules=rules,
     pdk_files={},
     valid_bjt_sizes={},

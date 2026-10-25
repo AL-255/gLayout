@@ -228,7 +228,8 @@ def multiplier(
     interfinger_rmult: int=1,
     sd_route_extension: float = 0,
     gate_route_extension: float = 0,
-    dummy_routes: bool=True
+    dummy_routes: bool=True,
+    vt: Optional[str] = None
 ) -> Component:
     """Generic poly/sd vias generator
     args:
@@ -259,6 +260,8 @@ def multiplier(
     leftsd_...all ports associated with the left most via array
     dummy_L,R_N,E,S,W ports if dummy_routes=True
     """
+    if vt is not None:
+        pdk = pdk.with_finfet_flavor(vt)
     # error checking
     if "+s/d" not in sdlayer:
         raise ValueError("specify + doped region for multiplier")
@@ -487,7 +490,8 @@ def nmos(
     tie_layers: tuple[str,str] = ("met2","met1"),
     substrate_tap_layers: tuple[str,str] = ("met2","met1"),
     dummy_routes: bool=True,
-    nfin: Optional[int] = None
+    nfin: Optional[int] = None,
+    vt: Optional[str] = None
 ) -> Component:
     """Generic NMOS generator
     pdk: mapped pdk to use
@@ -509,9 +513,13 @@ def nmos(
     interfinger_rmult: multiplies the thickness of the metal routes between the fingers (int only)
     tie_layers: tuple[str,str] specifying (horizontal glayer, vertical glayer) or well tie ring. default=("met2","met1")
     substrate_tap_layers: tuple[str,str] specifying (horizontal glayer, vertical glayer) or substrate tap ring. default=("met2","met1")
+    vt: optional FinFET threshold flavor; defaults to the selected PDK flavor
     dummy_routes: bool default=True, if true add add vias and short dummy poly,source,drain
     """
+    if vt is not None:
+        pdk = pdk.with_finfet_flavor(vt)
     if pdk.finfet is not None:
+        pdk.get_finfet_flavor()
         if any(isinstance(v,bool) or not isinstance(v,int) or v<1 for v in (fingers,multipliers)):
             raise ValueError('fingers and multipliers must be positive integers')
         width = pdk.finfet.fin_count(width,nfin)*pdk.finfet.fin_pitch
@@ -619,7 +627,8 @@ def nmos(
     if pdk.finfet is not None:
         component.info['finfet']={'nfin':pdk.finfet.fin_count(width),'fingers':fingers,
                                   'multipliers':multipliers,'length':pdk.finfet.gate_length,
-                                  'width':width}
+                                  'width':width,'vt':pdk.finfet_flavor,
+                                  'model':pdk.models['nfet']}
 
     return component
 
@@ -645,7 +654,8 @@ def pmos(
     tie_layers: tuple[str,str] = ("met2","met1"),
     substrate_tap_layers: tuple[str,str] = ("met2","met1"),
     dummy_routes: bool=True,
-    nfin: Optional[int] = None
+    nfin: Optional[int] = None,
+    vt: Optional[str] = None
 ) -> Component:
     """Generic PMOS generator
     pdk: mapped pdk to use
@@ -667,9 +677,13 @@ def pmos(
     interfinger_rmult: multiplies the thickness of the metal routes between the fingers (int only)
     tie_layers: tuple[str,str] specifying (horizontal glayer, vertical glayer) or well tie ring. default=("met2","met1")
     substrate_tap_layers: tuple[str,str] specifying (horizontal glayer, vertical glayer) or substrate tap ring. default=("met2","met1")
+    vt: optional FinFET threshold flavor; defaults to the selected PDK flavor
     dummy_routes: bool default=True, if true add add vias and short dummy poly,source,drain
     """
+    if vt is not None:
+        pdk = pdk.with_finfet_flavor(vt)
     if pdk.finfet is not None:
+        pdk.get_finfet_flavor()
         if any(isinstance(v,bool) or not isinstance(v,int) or v<1 for v in (fingers,multipliers)):
             raise ValueError('fingers and multipliers must be positive integers')
         width = pdk.finfet.fin_count(width,nfin)*pdk.finfet.fin_pitch
@@ -770,6 +784,7 @@ def pmos(
     if pdk.finfet is not None:
         component.info['finfet']={'nfin':pdk.finfet.fin_count(width),'fingers':fingers,
                                   'multipliers':multipliers,'length':pdk.finfet.gate_length,
-                                  'width':width}
+                                  'width':width,'vt':pdk.finfet_flavor,
+                                  'model':pdk.models['pfet']}
 
     return component

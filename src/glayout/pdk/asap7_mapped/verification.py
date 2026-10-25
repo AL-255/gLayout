@@ -11,6 +11,9 @@ from pathlib import Path
 import re
 import klayout.db as k
 
+# Physical threshold-adjust masks from the ASAP7 r1p7 layer map.
+VT_MASKS = {"lvt": 98, "slvt": 97, "sram": 110}
+
 
 def read_layout(path, topcell=None):
     layout = k.Layout()
@@ -82,6 +85,17 @@ def drc(path, topcell=None):
     minimum(12, "NSELECT", 0.054, 0)
     minimum(13, "PSELECT", 0.054, 0)
     add("NSELECT.PSELECT.AUX.1", region(12) & region(13))
+    thresholds = {vt: region(number) for vt, number in VT_MASKS.items()}
+    for vt, mask in thresholds.items():
+        add(vt.upper() + ".W.2", mask.width_check(u(0.054)))
+        add(vt.upper() + ".W.1", sum(p.bbox().width() < u(0.108) for p in mask.each()))
+        covered = active.interacting(mask)
+        add(vt.upper() + ".ACTIVE.EN", covered - mask.sized(-u(0.046), -u(0.027), 2))
+        add(vt.upper() + ".GATE.EX", gate.interacting(covered) - mask.sized(-u(0.007)))
+    masks = list(thresholds.values())
+    for i, a in enumerate(masks):
+        for b in masks[i + 1 :]:
+            add("VT.AUX.2", a & b)
     minimum(1, "WELL", 0.054, 0.054, 0.005832)
     sdt = minimum(88, "SDT", 0.024, 0.030)
     lisd = minimum(17, "LISD", 0.024, 0.018, 0.000648)
@@ -132,33 +146,44 @@ def lvs(gds, spice, output_dir, topcell=None):
 
     active = layer(11)
     gates = layer(7) - layer(10)
+    threshold_masks = {vt: layer(number) for vt, number in VT_MASKS.items()}
+    marker_union = k.Region()
+    for mask in threshold_masks.values():
+        if not (marker_union & mask).is_empty():
+            raise ValueError("overlapping threshold-adjust masks")
+        marker_union += mask
+    nbulk = l2n.make_layer("nmos_bulk")
+    pbulk = layer(1)
+    well_names = l2n.make_text_layer(layout.layer(1, 251), "well_names")
+    l2n.connect(pbulk)
+    l2n.connect(pbulk, well_names)
+    if well_names.is_empty():
+        l2n.connect_global(pbulk, "B")
+    names = {
+        s.text.string for s in top.shapes(layout.layer(3, 251)).each() if s.is_text()
+    }
+    if len(names) > 1:
+        raise ValueError("conflicting implicit substrate names")
+    l2n.connect_global(nbulk, next(iter(names), "B"))
     sds = []
-    for model, select in (("nmos_rvt", 12), ("pmos_rvt", 13)):
-        act = active & layer(select)
-        sd = act - gates
-        bulk = layer(1) if select == 13 else l2n.make_layer(model + "_bulk")
-        l2n.extract_devices(
-            k.DeviceExtractorMOS4Transistor(model),
-            {"SD": sd, "G": act & gates, "P": gates, "W": bulk},
-        )
-        if select == 13:
-            well_names = l2n.make_text_layer(layout.layer(1, 251), "well_names")
-            l2n.connect(bulk)
-            l2n.connect(bulk, well_names)
-            # Standalone primitives have no explicit bulk label.
-            if well_names.is_empty():
-                l2n.connect_global(bulk, "B")
-        else:
-            names = {
-                s.text.string
-                for s in top.shapes(layout.layer(3, 251)).each()
-                if s.is_text()
-            }
-            if len(names) > 1:
-                raise ValueError("conflicting implicit substrate names")
-            l2n.connect_global(bulk, next(iter(names), "B"))
-        l2n.connect(sd)
-        sds.append(sd)
+    for polarity, select, bulk in (("nmos", 12, nbulk), ("pmos", 13, pbulk)):
+        selected = active & layer(select)
+        for mask in threshold_masks.values():
+            if not (selected.interacting(mask) - mask).is_empty():
+                raise ValueError("threshold marker partially covers transistor ACTIVE")
+        for vt in ("rvt", *VT_MASKS):
+            act = (
+                selected - marker_union
+                if vt == "rvt"
+                else selected & threshold_masks[vt]
+            )
+            sd = act - gates
+            l2n.extract_devices(
+                k.DeviceExtractorMOS4Transistor(polarity + "_" + vt),
+                {"SD": sd, "G": act & gates, "P": gates, "W": bulk},
+            )
+            l2n.connect(sd)
+            sds.append(sd)
     # Virtual body-contact markers bind the implicit substrate/well to the
     # existing metal rails without inventing planar diffusion masks.
     body = l2n.make_layer(layout.layer(100, 20), "body_contacts")
@@ -180,8 +205,6 @@ def lvs(gds, spice, output_dir, topcell=None):
         l2n.connect(region)
     for a, b in [
         (gates, lig),
-        (sds[0], sdt),
-        (sds[1], sdt),
         (sdt, lisd),
         (lig, lisd),
         (lig, v0),
@@ -189,6 +212,8 @@ def lvs(gds, spice, output_dir, topcell=None):
         (v0, metals[0]),
     ]:
         l2n.connect(a, b)
+    for sd in sds:
+        l2n.connect(sd, sdt)
     for a, via, b in zip(metals, vias, metals[1:]):
         l2n.connect(a, via)
         l2n.connect(via, b)
@@ -275,7 +300,7 @@ def lvs(gds, spice, output_dir, topcell=None):
     from glayout.pdk.asap7_mapped import asap7_mapped_pdk
 
     text = re.sub(
-        r"^X(\S+)(\s+\S+\s+\S+\s+\S+\s+\S+\s+(?:nmos_rvt|pmos_rvt)\b)",
+        r"^X(\S+)(\s+\S+\s+\S+\s+\S+\s+\S+\s+(?:nmos|pmos)_(?:rvt|lvt|slvt|sram)\b)",
         r"M\1\2",
         text,
         flags=re.M | re.I,

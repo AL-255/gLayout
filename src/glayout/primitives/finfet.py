@@ -39,6 +39,7 @@ def fingers(
     from glayout.primitives.via_gen import via_stack
 
     t = pdk.finfet
+    flavor = pdk.get_finfet_flavor()
     if length is not None and not math.isclose(length, t.gate_length, abs_tol=1e-10):
         raise ValueError("unsupported FinFET gate length")
     nf = t.fin_count(width)
@@ -106,6 +107,8 @@ def fingers(
         gate_top + t.select_enclosure,
     )
     _rect(c, pdk.get_glayer(sdlayer), *select)
+    if flavor.marker is not None:
+        _rect(c, pdk.get_glayer(flavor.marker), *select)
     if sdlayer == "p+s/d":
         enc = t.well_enclosure
         _rect(
@@ -168,6 +171,8 @@ def fingers(
         "multipliers": 1,
         "width": height,
         "length": t.gate_length,
+        "vt": pdk.finfet_flavor,
+        "model": pdk.models["pfet" if sdlayer == "p+s/d" else "nfet"],
     }
     t.validate(c)
     return c
@@ -184,6 +189,7 @@ def finfet(
     with_dummy=True,
     sd_route_topmet="met2",
     gate_route_topmet="met2",
+    vt=None,
     **kwargs,
 ):
     from glayout.primitives.fet import nmos, pmos
@@ -201,6 +207,7 @@ def finfet(
         with_dummy=with_dummy,
         sd_route_topmet=sd_route_topmet,
         gate_route_topmet=gate_route_topmet,
+        vt=vt,
         **kwargs,
     )
 
@@ -214,6 +221,7 @@ def finfet_netlist(
     with_dummy=False,
     dummies_tied_to_bulk=False,
 ):
+    pdk.get_finfet_flavor()
     model = pdk.models[device]
     dummy = (with_dummy, with_dummy) if isinstance(with_dummy, bool) else with_dummy
     lines = [".subckt {circuit_name} {nodes}"]
@@ -228,7 +236,8 @@ def finfet_netlist(
     ]
     lines += [".ends {circuit_name}"]
     return Netlist(
-        circuit_name="NFET" if device == "nfet" else "PFET",
+        circuit_name=("NFET" if device == "nfet" else "PFET")
+        + ("" if pdk.finfet_flavor == "rvt" else "_" + pdk.finfet_flavor.upper()),
         nodes=["D", "G", "S", "B", "DUM"],
         source_netlist="\n".join(lines),
         parameters={

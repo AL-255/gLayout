@@ -22,8 +22,8 @@ nfin selects a positive integral number of fins. Otherwise width is occupied
 fin-track height in micrometres, rounded UP to complete 27 nm tracks. It is not
 BSIM-CMG effective perimeter width. ASAP7 gates are 20 nm long on a 54 nm lattice;
 fins are 7 nm wide on a 27 nm lattice. Unsupported gate lengths are rejected.
-The reference netlist uses nmos_rvt/pmos_rvt, explicit nfin, and electrical dummy
-transistors matching the existing dummy connections.
+The reference netlist uses the selected PDK model, explicit nfin, and electrical
+dummy transistors matching the existing dummy connections.
 
 Generic poly routing denotes local gate interconnect (LIG, layer 16); actual
 vertical gate stripes use layer 7. Source/drain access uses SDT, LISD, V0 and M1.
@@ -46,6 +46,55 @@ They are metadata, not ASAP7 fabrication masks. Existing metal body rails remain
 present. The POC extraction binds their body markers to substrate/nwell. Multiple
 isolated NMOS substrate biases are unsupported. Foundry body-contact integration
 and a complete well/isolation flow remain outside this demonstration.
+
+## All transistor threshold flavors
+
+Both NMOS and PMOS support RVT, LVT, SLVT and SRAM Vt. The default remains RVT.
+Select an individual device, or select a PDK copy for an existing circuit:
+
+    from glayout import asap7, nmos, pmos
+    from glayout.cells.elementary import current_mirror
+
+    input_fet = nmos(asap7, nfin=3, fingers=2, vt="lvt")
+    load_fet = pmos(asap7, nfin=3, vt="slvt")
+    sram_fet = nmos(asap7, nfin=2, vt="sram")
+    lvt_pdk = asap7.with_finfet_flavor("lvt")
+    mirror = current_mirror(lvt_pdk, width=0.081, numcols=2)
+
+The selector returns a copy and leaves the original PDK's model choices intact.
+The nmos, pmos, finfet and multiplier entry points accept vt. Existing circuit
+builders can receive the selected PDK without any placement or routing edits.
+Different flavors may coexist in one layout on the same fin/gate lattice.
+
+| vt | NMOS model | PMOS model | Physical threshold mask |
+| --- | --- | --- | --- |
+| rvt | nmos_rvt | pmos_rvt | none |
+| lvt | nmos_lvt | pmos_lvt | LVT 98/0 |
+| slvt | nmos_slvt | pmos_slvt | SLVT 97/0 |
+| sram | nmos_sram | pmos_sram | SRAMVT 110/0 |
+
+Markers cover the actual device and its electrical dummies. SRAM Vt retains
+regular conservative geometry; SRAMDRC spacing relaxations are disabled.
+Device info includes vt and model. Each reference netlist uses its selected
+model name. The supplied ASAP7 HSPICE files 7nm_TT_160803.pm, 7nm_FF_160803.pm,
+and 7nm_SS_160803.pm each define all eight models. Include the desired corner
+file separately when simulating; the generated device netlists reference those
+models. Structural POC LVS does not replace electrical simulation.
+
+LVS derives flavor independently from masks in GDS: unmarked ACTIVE is RVT;
+LVT, SLVT and SRAMVT select their respective device classes. A missing marker,
+wrong reference model, overlapping markers or partially covered ACTIVE cannot
+silently pass as the requested flavor. DRC adds threshold-mask dimensions,
+ACTIVE/gate enclosure and mutual-overlap checks from DRM section 3.7.
+
+Generate GDS, reference SPICE, extracted netlists and a JSON summary for all eight:
+
+    python examples/asap7_devices.py --out-dir asap7_devices
+
+The ASAP7 CI runs the flavor matrix and uploads these eight verified examples
+for each geometry backend. Tests cover narrow and multi-finger/multi-row devices,
+all eight flavors in a single hierarchy, unchanged current-mirror builders with
+selected PDKs, and negative mask/model cases.
 
 ## Custom MOM capacitors
 
@@ -95,9 +144,12 @@ DRC/LVS-clean.
 ## Corrected hierarchy validation
 
 The circuit, placement, and routing sources have zero diff against baseline
-3e129ed. Native backend: 55 primitive/backend tests pass; gdsfactory: 49 FinFET tests pass; the additional fast
-planar/import/pin-filter checks passed (75 total tests and 16 subtests).
-All eleven existing examples pass the implemented DRC subset on both engines.
+3e129ed. Native Python 3.10 checks pass 104 tests plus 16 subtests, including
+the fast planar/import/pin-filter checks. The FinFET/flavor suites pass 78 tests
+on gdsfactory/Python 3.10 and on native gdstk/Python 3.13.
+All eight flavor examples pass POC DRC and extracted LVS on both engines.
+All eleven existing circuit examples pass the implemented DRC subset on both
+engines; the 38 generated/example GDS files were also checked with KLayout 0.30.
 Extracted LVS passes 8/11 on both engines: diff_pair, diff_pair_ibias, and opamp still
 fail. No example is skipped or its failure suppressed. The proposed two
 diffpair endpoint changes and one MOM plate selection are not applied because

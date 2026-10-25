@@ -3,7 +3,8 @@ usage: from mappedpdk import MappedPDK
 """
 import re
 from glayout.backend import Component, Layer, PathType, Pdk
-from pydantic import validator, StrictStr, ValidationError
+from glayout.pdk.finfet import FinFETFlavor
+from pydantic import validator, StrictStr, ValidationError, Field
 from typing import ClassVar, Optional, Any, Union, Literal, Iterable, TypedDict
 from pathlib import Path
 from decimal import Decimal, ROUND_UP
@@ -240,6 +241,9 @@ class MappedPDK(Pdk):
 
     valid_glayers: ClassVar[tuple[str]] = (
         "fin",
+        "lvt",
+        "slvt",
+        "sramvt",
         "gcut",
         "sdt",
         "lig",
@@ -288,6 +292,36 @@ class MappedPDK(Pdk):
     )
 
     finfet: Optional[Any] = None
+    finfet_flavors: dict[str, FinFETFlavor] = Field(default_factory=dict)
+    finfet_flavor: str = "rvt"
+
+    def get_finfet_flavor(self) -> FinFETFlavor:
+        """Return the selected models/marker without changing the active PDK."""
+        if not self.finfet_flavors:
+            return FinFETFlavor(self.models["nfet"], self.models["pfet"])
+        if self.finfet_flavor not in self.finfet_flavors:
+            raise ValueError("unknown FinFET flavor: " + self.finfet_flavor)
+        flavor = self.finfet_flavors[self.finfet_flavor]
+        if any(self.models[d] != getattr(flavor, d) for d in ("nfet", "pfet")):
+            raise ValueError(
+                "FinFET models do not match the selected flavor; use with_finfet_flavor"
+            )
+        return flavor
+
+    def with_finfet_flavor(self, vt: str) -> "MappedPDK":
+        """Copy this PDK with another threshold flavor; existing circuits need no edits."""
+        if self.finfet is None:
+            raise ValueError("vt selection requires a FinFET PDK")
+        if not isinstance(vt, str) or vt.lower() not in self.finfet_flavors:
+            raise ValueError(
+                f"unsupported FinFET flavor {vt!r}; choose {', '.join(self.finfet_flavors)}"
+            )
+        selected = vt.lower()
+        flavor = self.finfet_flavors[selected]
+        result = self.model_copy(deep=True)
+        result.finfet_flavor = selected
+        result.models = {**self.models, "nfet": flavor.nfet, "pfet": flavor.pfet}
+        return result
 
     @validator("finfet")
     def finfet_check(cls, technology):

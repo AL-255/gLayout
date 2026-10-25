@@ -28,7 +28,9 @@ jobs:
           cache-dependency-path: setup.py
       - run: pip install -e . pytest
       - name: FinFET lattice, transistor, and MOM tests
-        run: pytest -q tests/test_finfet.py --junitxml=asap7_results/unit.xml
+        run: pytest -q tests/test_finfet.py tests/test_finfet_flavors.py --junitxml=asap7_results/unit.xml
+      - name: Generate and verify every transistor flavor
+        run: python examples/asap7_devices.py --out-dir asap7_results/devices
       - name: Build all CI examples and check the ASAP7 POC DRC subset
         run: python tests/drc/run_cell_drc.py --pdk asap7 --jobs 2 --out-dir asap7_results/drc
       - name: Extract and compare every example including opamp and MOM caps

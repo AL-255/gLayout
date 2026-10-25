@@ -15,6 +15,15 @@ import numpy as np
 
 
 @dataclass(frozen=True)
+class FinFETFlavor:
+    """A model pair and optional threshold-adjust mask, separate from the lattice."""
+
+    nfet: str
+    pfet: str
+    marker: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class FinFETTechnology:
     fin_pitch: float
     fin_width: float
