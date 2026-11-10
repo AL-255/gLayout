@@ -149,6 +149,14 @@ def _run_one_lvs(item: dict) -> dict:
     result: Dict[str, Any] = {"cell": name, "pdk": pdk_name, "status": "skip"}
     try:
         print(f"[LVS]  {name}", flush=True)
+        if pdk_name == 'asap7':
+            from glayout.pdk.asap7_mapped.verification import lvs
+            ret=lvs(gds_path,netlist_path,rpt_dir/name)
+            result.update(status='pass' if ret['match'] else 'fail',
+                          message='Netlists match' if ret['match'] else 'Netlists do not match',
+                          summary=ret,report=str((rpt_dir/name).relative_to(out_dir)))
+            print(f"[{result['status'].upper()}] {name}: {result['message']}",flush=True)
+            return result
         if pdk_name in ("gf180", "openrpdk28", "icsprout55"):
             default_pdk_root = (
                 str(REPO_ROOT / "src" / "glayout" / "pdk" / f"{pdk_name}_mapped" / "lvs")
@@ -202,7 +210,7 @@ def _run_one_lvs(item: dict) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdk", required=True, choices=["sky130", "gf180", "openrpdk28", "icsprout55"])
+    parser.add_argument("--pdk", required=True, choices=["sky130", "gf180", "openrpdk28", "icsprout55", "asap7"])
     parser.add_argument(
         "--inputs-dir", required=True,
         help="Directory containing gds/<cell>.gds and netlists/<cell>.spice (DRC artifact root for the PDK).",
@@ -215,7 +223,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--skip-cells",
-        default="differential_to_single_ended_converter,nmos_narrow,pmos_narrow",
+        default=None,
         help=(
             "Comma-separated cell names to skip when --cells is not specified. "
             "Default skips differential_to_single_ended_converter (Magic mis-extracts "
@@ -243,6 +251,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.skip_cells is None:
+        args.skip_cells = "" if args.pdk == "asap7" else "differential_to_single_ended_converter,nmos_narrow,pmos_narrow"
     inputs_dir = Path(args.inputs_dir).resolve()
     out_dir = Path(args.out_dir).resolve()
     rpt_dir = out_dir / "reports"

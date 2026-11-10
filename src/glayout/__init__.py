@@ -38,6 +38,10 @@ try:
 except Exception:
     icsprout55 = None
 
+from .pdk.asap7_mapped import asap7_mapped_pdk as asap7
+from .primitives.finfet import finfet
+from .primitives.momcap import momcap
+
 # Primitive components
 from .primitives.via_gen import via_stack, via_array
 from .primitives.fet import nmos, pmos, multiplier
@@ -136,4 +140,7 @@ __all__ = [
     "gf180",
     "openrpdk28",
     "icsprout55",
+    "asap7",
+    "finfet",
+    "momcap",
 ]
